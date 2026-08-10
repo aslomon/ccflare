@@ -3,10 +3,17 @@ import type { TimeRange } from "@ccflare/types";
 import {
 	formatNumber,
 	formatPercentage,
+	formatTokens,
 	formatTokensPerSecond,
 } from "@ccflare/ui";
-import { format } from "date-fns";
-import { Activity, CheckCircle, Clock, DollarSign, Zap } from "lucide-react";
+import {
+	Activity,
+	CheckCircle,
+	Clock,
+	DollarSign,
+	Hash,
+	Zap,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { REFRESH_INTERVALS } from "../constants";
 import { useAccounts, useAnalytics, useStats } from "../hooks/queries";
@@ -14,6 +21,11 @@ import { ChartsSection } from "./overview/ChartsSection";
 import { DataRetentionCard } from "./overview/DataRetentionCard";
 import { LoadingSkeleton } from "./overview/LoadingSkeleton";
 import { MetricCard } from "./overview/MetricCard";
+import {
+	buildOverviewTimeSeries,
+	getEstimatedCostNote,
+	OVERVIEW_DEFAULT_RANGE,
+} from "./overview/overview-data";
 import { RateLimitInfo } from "./overview/RateLimitInfo";
 import { SystemStatus } from "./overview/SystemStatus";
 import { TimeRangeSelector } from "./overview/TimeRangeSelector";
@@ -24,7 +36,7 @@ export function OverviewTab() {
 	const { data: stats, isLoading: statsLoading } = useStats(
 		REFRESH_INTERVALS.default,
 	);
-	const [timeRange, setTimeRange] = useState<TimeRange>("24h");
+	const [timeRange, setTimeRange] = useState<TimeRange>(OVERVIEW_DEFAULT_RANGE);
 	const { data: analytics, isLoading: analyticsLoading } = useAnalytics(
 		timeRange,
 		{ accounts: [], models: [], status: "all" },
@@ -39,15 +51,8 @@ export function OverviewTab() {
 	// Transform time series data
 	const timeSeriesData = useMemo(() => {
 		if (!analytics) return [];
-		return analytics.timeSeries.map((point) => ({
-			time: format(new Date(point.ts), "HH:mm"),
-			requests: point.requests,
-			successRate: point.successRate,
-			responseTime: Math.round(point.avgResponseTime),
-			cost: point.costUsd.toFixed(2),
-			tokensPerSecond: point.avgTokensPerSecond || 0,
-		}));
-	}, [analytics]);
+		return buildOverviewTimeSeries(analytics.timeSeries, timeRange);
+	}, [analytics, timeRange]);
 
 	if (loading && !combinedData) {
 		return <LoadingSkeleton />;
@@ -91,9 +96,12 @@ export function OverviewTab() {
 	let trendCost: "up" | "down" | "flat" = "flat";
 	let trendOutputSpeed: "up" | "down" | "flat" = "flat";
 
-	if (timeSeriesData.length >= 2) {
-		const lastBucket = timeSeriesData[timeSeriesData.length - 1];
-		const prevBucket = timeSeriesData[timeSeriesData.length - 2];
+	const observedTimeSeries = timeSeriesData.filter(
+		(point) => point.observed === 1,
+	);
+	if (observedTimeSeries.length >= 2) {
+		const lastBucket = observedTimeSeries[observedTimeSeries.length - 1];
+		const prevBucket = observedTimeSeries[observedTimeSeries.length - 2];
 
 		// Calculate deltas
 		deltaRequests = pctChange(lastBucket.requests, prevBucket.requests);
@@ -106,10 +114,7 @@ export function OverviewTab() {
 			lastBucket.responseTime,
 			prevBucket.responseTime,
 		);
-		deltaCost = pctChange(
-			Number.parseFloat(lastBucket.cost),
-			Number.parseFloat(prevBucket.cost),
-		);
+		deltaCost = pctChange(lastBucket.cost, prevBucket.cost);
 		deltaOutputSpeed = pctChange(
 			lastBucket.tokensPerSecond,
 			prevBucket.tokensPerSecond,
@@ -161,7 +166,7 @@ export function OverviewTab() {
 			</div>
 
 			{/* Metrics Grid */}
-			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
 				<MetricCard
 					title="Total Requests"
 					value={formatNumber(analytics?.totals.requests || 0)}
@@ -187,16 +192,18 @@ export function OverviewTab() {
 					icon={Clock}
 				/>
 				<MetricCard
-					title="Total Cost"
-					value={
-						analytics?.totals.totalCostUsd
-							? formatCost(analytics.totals.totalCostUsd)
-							: "$0.0000"
-					}
+					title="Total Tokens"
+					value={formatTokens(analytics?.totals.totalTokens)}
+					icon={Hash}
+				/>
+				<MetricCard
+					title="Estimated Cost"
+					value={formatCost(analytics?.totals.totalCostUsd)}
 					change={deltaCost !== null ? deltaCost : undefined}
 					trend={trendCost}
 					trendPeriod={trendPeriod}
 					icon={DollarSign}
+					note={getEstimatedCostNote(analytics?.totals.unpricedRequests ?? 0)}
 				/>
 				<MetricCard
 					title="Output Speed"
@@ -210,6 +217,8 @@ export function OverviewTab() {
 
 			<ChartsSection
 				timeSeriesData={timeSeriesData}
+				timeRange={timeRange}
+				bucket={analytics?.meta?.bucket ?? ""}
 				modelData={modelData}
 				accountHealthData={accountHealthData}
 				loading={loading}

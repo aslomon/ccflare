@@ -4,6 +4,7 @@ export {
 	HTTP_STATUS,
 	LIMITS,
 	NETWORK,
+	RETENTION_DAYS,
 	TIME_CONSTANTS,
 } from "./constants";
 export { container, SERVICE_KEYS } from "./di";
@@ -20,6 +21,8 @@ export { formatCost } from "./formatters";
 export * from "./lifecycle";
 export { getModelShortName } from "./models";
 export {
+	type CostEstimateResult,
+	estimateCostResult,
 	estimateCostUSD,
 	setPricingLogger,
 	type TokenBreakdown,

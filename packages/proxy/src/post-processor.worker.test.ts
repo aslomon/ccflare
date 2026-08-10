@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	captureStreamChunkForPayload,
 	createRequestState,
 	processStreamChunk,
 } from "./post-processor.worker";
@@ -16,6 +17,9 @@ function createStartMessage(): StartMessage {
 		timestamp: Date.now(),
 		requestHeaders: {},
 		requestBody: null,
+		captureRawPayload: false,
+		rawPayloadMaxBytes: 256 * 1024,
+		requestBodyTruncated: false,
 		responseStatus: 200,
 		responseHeaders: {
 			"content-type": "text/event-stream; charset=utf-8",
@@ -28,6 +32,18 @@ function createStartMessage(): StartMessage {
 }
 
 describe("processStreamChunk", () => {
+	it("does not retain stream chunks when raw capture is disabled", () => {
+		const state = createRequestState({
+			...createStartMessage(),
+			captureRawPayload: false,
+		});
+
+		captureStreamChunkForPayload(new Uint8Array([1, 2, 3]), state);
+
+		expect(state.chunks).toEqual([]);
+		expect(state.chunksBytes).toBe(0);
+	});
+
 	it("extracts usage when response.completed event and data are in the same chunk", () => {
 		const state = createRequestState(createStartMessage());
 

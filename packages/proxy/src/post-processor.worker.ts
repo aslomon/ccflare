@@ -1,11 +1,6 @@
 declare var self: Worker;
 
-import {
-	BUFFER_SIZES,
-	estimateCostUSD,
-	formatCost,
-	TIME_CONSTANTS,
-} from "@ccflare/core";
+import { BUFFER_SIZES, formatCost, TIME_CONSTANTS } from "@ccflare/core";
 import { AsyncDbWriter, DatabaseOperations } from "@ccflare/database";
 import { Logger } from "@ccflare/logger";
 import {
@@ -26,9 +21,11 @@ import {
 	type OpenAIUsagePayload,
 	parseOpenAIUsagePayload,
 } from "./openai-usage";
+import { boundRequestPayloadForStorage } from "./payload-bounds";
 import { combineChunks } from "./stream-tee";
+import { resolveUsageCost } from "./usage-cost";
+import { processWorkerMessageWithAck } from "./worker-message-processor";
 import type {
-	AckMessage,
 	ChunkMessage,
 	EndMessage,
 	IncomingWorkerMessage,
@@ -38,6 +35,7 @@ import type {
 	ShutdownCompleteMessage,
 	StartMessage,
 	SummaryMessage,
+	WorkerHealthMessage,
 } from "./worker-messages";
 
 interface RequestState {
@@ -60,7 +58,7 @@ interface RequestState {
 		reasoningTokens?: number;
 		outputTokensComputed?: number;
 		totalTokens?: number;
-		costUsd?: number;
+		costUsd?: number | null;
 		tokensPerSecond?: number;
 	};
 	lastActivity: number;
@@ -95,9 +93,6 @@ const MAX_BUFFER_SIZE =
 const TIMEOUT_MS = Number(
 	process.env.CF_STREAM_TIMEOUT_MS || TIME_CONSTANTS.STREAM_TIMEOUT_DEFAULT,
 );
-// Hard cap on payload retention bytes per request (default: 2MB)
-const MAX_PAYLOAD_BYTES =
-	Number(process.env.CF_MAX_PAYLOAD_BYTES || 0) || 2 * 1024 * 1024;
 // Hard cap on concurrent tracked requests in the worker
 const MAX_TRACKED_REQUESTS =
 	Number(process.env.CF_MAX_TRACKED_REQUESTS || 0) || 100;
@@ -111,6 +106,25 @@ const TOKEN_CURVE_MAX_SAMPLES = Math.max(
 );
 let cleanupIntervalId: Timer | null = null;
 let messageProcessingQueue: Promise<void> = Promise.resolve();
+
+function postWorkerHealth(delta: WorkerHealthMessage["delta"]): void {
+	self.postMessage({
+		type: "worker-health",
+		delta,
+	} satisfies WorkerHealthMessage);
+}
+
+async function requireDbWrite(
+	resultPromise: ReturnType<AsyncDbWriter["enqueue"]>,
+	operation: string,
+): Promise<void> {
+	const result = await resultPromise;
+	if (result.error) {
+		throw new Error(`${operation}: ${result.error.message}`, {
+			cause: result.error,
+		});
+	}
+}
 
 // Check if a request should be logged
 function shouldLogRequest(path: string, status: number): boolean {
@@ -535,10 +549,10 @@ function hasTrackedUsageData(state: RequestState): boolean {
 async function handleStart(msg: StartMessage): Promise<void> {
 	// Guard: cap concurrent tracked requests to prevent unbounded memory growth
 	if (requests.size >= MAX_TRACKED_REQUESTS) {
-		log.warn(
-			`Tracked request cap reached (${MAX_TRACKED_REQUESTS}), skipping tracking for ${msg.requestId}`,
-		);
-		return;
+		const oldestRequestId = requests.keys().next().value;
+		if (typeof oldestRequestId === "string") requests.delete(oldestRequestId);
+		postWorkerHealth({ usageFacts: 1 });
+		log.warn(`Tracked request cap reached; evicted ${oldestRequestId}`);
 	}
 
 	// Check if we should skip logging this request
@@ -558,24 +572,47 @@ async function handleStart(msg: StartMessage): Promise<void> {
 	}
 
 	// Save minimal request info immediately
-	asyncWriter.enqueue(() =>
-		dbOps.saveRequestMeta(
-			msg.requestId,
-			msg.method,
-			msg.path,
-			msg.providerName,
-			msg.upstreamPath,
-			msg.accountId,
-			msg.responseStatus,
-			msg.timestamp,
+	await requireDbWrite(
+		asyncWriter.enqueue(() =>
+			dbOps.saveRequestMeta(
+				msg.requestId,
+				msg.method,
+				msg.path,
+				msg.providerName,
+				msg.upstreamPath,
+				msg.accountId,
+				msg.responseStatus,
+				msg.timestamp,
+			),
 		),
+		`Failed to save request start ${msg.requestId}`,
 	);
 
-	// Update account usage if authenticated
 	if (msg.accountId) {
-		const accountId = msg.accountId; // Capture for closure
-		asyncWriter.enqueue(() => dbOps.updateAccountUsage(accountId));
+		const accountId = msg.accountId;
+		await requireDbWrite(
+			asyncWriter.enqueue(() => dbOps.updateAccountUsage(accountId)),
+			`Failed to update account usage ${accountId}`,
+		);
 	}
+}
+
+export function captureStreamChunkForPayload(
+	chunk: Uint8Array,
+	state: RequestState,
+): void {
+	if (!state.startMessage.captureRawPayload || state.payloadCapped) return;
+	const maxPayloadBytes = state.startMessage.rawPayloadMaxBytes;
+	if (state.chunksBytes + chunk.length <= maxPayloadBytes) {
+		state.chunks.push(chunk);
+		state.chunksBytes += chunk.length;
+		return;
+	}
+
+	const remaining = maxPayloadBytes - state.chunksBytes;
+	if (remaining > 0) state.chunks.push(chunk.slice(0, remaining));
+	state.chunksBytes = maxPayloadBytes;
+	state.payloadCapped = true;
 }
 
 function handleChunk(msg: ChunkMessage): void {
@@ -587,23 +624,8 @@ function handleChunk(msg: ChunkMessage): void {
 
 	// Store chunk for payload retention only if under the byte cap.
 	// Usage extraction via processStreamChunk is independent and always runs.
-	if (!state.payloadCapped) {
-		if (state.chunksBytes + msg.data.length <= MAX_PAYLOAD_BYTES) {
-			state.chunks.push(msg.data);
-			state.chunksBytes += msg.data.length;
-		} else {
-			// Store a partial chunk to reach the cap, then stop
-			const remaining = MAX_PAYLOAD_BYTES - state.chunksBytes;
-			if (remaining > 0) {
-				state.chunks.push(msg.data.slice(0, remaining));
-				state.chunksBytes = MAX_PAYLOAD_BYTES;
-			}
-			state.payloadCapped = true;
-			log.debug(
-				`Payload cap reached for request ${msg.requestId} (${MAX_PAYLOAD_BYTES} bytes)`,
-			);
-		}
-	}
+	captureStreamChunkForPayload(msg.data, state);
+	if (msg.dataTruncated) state.payloadCapped = true;
 
 	// Process for usage extraction (always, regardless of payload cap)
 	processStreamChunk(msg.data, state);
@@ -682,15 +704,13 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 			(state.usage.cacheReadInputTokens || 0) +
 			(state.usage.cacheCreationInputTokens || 0);
 
-		state.usage.costUsd =
-			usageModel === "unknown"
-				? 0
-				: await estimateCostUSD(usageModel, {
-						inputTokens: state.usage.inputTokens,
-						outputTokens: finalOutputTokens,
-						cacheReadInputTokens: state.usage.cacheReadInputTokens,
-						cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
-					});
+		const costEstimate = await resolveUsageCost(usageModel, {
+			inputTokens: state.usage.inputTokens,
+			outputTokens: finalOutputTokens,
+			cacheReadInputTokens: state.usage.cacheReadInputTokens,
+			cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
+		});
+		state.usage.costUsd = costEstimate.costUsd;
 
 		// Calculate tokens per second using actual streaming duration
 		if (finalOutputTokens > 0) {
@@ -775,53 +795,71 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 	payload.meta.trace.responseId = linkage.responseId;
 	payload.meta.trace.previousResponseId = linkage.previousResponseId;
 	payload.meta.trace.clientSessionId = clientSessionId;
+	const boundedPayload = startMessage.captureRawPayload
+		? boundRequestPayloadForStorage(payload)
+		: { payload, truncated: false };
 
 	// Update request summary and payload atomically
-	asyncWriter.enqueue(() =>
-		dbOps.saveRequest(
-			startMessage.requestId,
-			startMessage.method,
-			startMessage.path,
-			startMessage.providerName,
-			startMessage.upstreamPath,
-			startMessage.accountId,
-			startMessage.responseStatus,
-			msg.success,
-			msg.error || null,
-			responseTime,
-			startMessage.failoverAttempts,
-			state.usage.model
-				? {
-						model: state.usage.model,
-						promptTokens:
-							(state.usage.inputTokens || 0) +
-							(state.usage.cacheReadInputTokens || 0) +
-							(state.usage.cacheCreationInputTokens || 0),
-						completionTokens: state.usage.outputTokens,
-						totalTokens: state.usage.totalTokens,
-						costUsd: state.usage.costUsd,
-						// Keep original breakdown for payload
-						inputTokens: state.usage.inputTokens,
-						outputTokens: state.usage.outputTokens,
-						cacheReadInputTokens: state.usage.cacheReadInputTokens,
-						cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
-						reasoningTokens: state.usage.reasoningTokens,
-						tokensPerSecond: state.usage.tokensPerSecond,
-					}
-				: undefined,
-			{
-				timestamp: startMessage.timestamp,
-				payload,
-				timings,
-			},
+	await requireDbWrite(
+		asyncWriter.enqueue(() =>
+			dbOps.saveRequest(
+				startMessage.requestId,
+				startMessage.method,
+				startMessage.path,
+				startMessage.providerName,
+				startMessage.upstreamPath,
+				startMessage.accountId,
+				startMessage.responseStatus,
+				msg.success,
+				msg.error || null,
+				responseTime,
+				startMessage.failoverAttempts,
+				state.usage.model
+					? {
+							model: state.usage.model,
+							promptTokens:
+								(state.usage.inputTokens || 0) +
+								(state.usage.cacheReadInputTokens || 0) +
+								(state.usage.cacheCreationInputTokens || 0),
+							completionTokens: state.usage.outputTokens,
+							totalTokens: state.usage.totalTokens,
+							costUsd: state.usage.costUsd,
+							// Keep original breakdown for payload
+							inputTokens: state.usage.inputTokens,
+							outputTokens: state.usage.outputTokens,
+							cacheReadInputTokens: state.usage.cacheReadInputTokens,
+							cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
+							reasoningTokens: state.usage.reasoningTokens,
+							tokensPerSecond: state.usage.tokensPerSecond,
+						}
+					: undefined,
+				{
+					timestamp: startMessage.timestamp,
+					linkagePayload: payload,
+					payload: startMessage.captureRawPayload
+						? boundedPayload.payload
+						: undefined,
+					payloadTruncated:
+						startMessage.requestBodyTruncated ||
+						state.payloadCapped ||
+						msg.responseBodyTruncated === true ||
+						boundedPayload.truncated,
+					timings,
+				},
+			),
 		),
+		`Failed to save request completion ${startMessage.requestId}`,
 	);
 
 	// Log if we have usage
 	if (state.usage.model && startMessage.accountId !== null) {
 		log.info(
 			`Usage for request ${startMessage.requestId}: Model: ${state.usage.model}, ` +
-				`Tokens: ${state.usage.totalTokens || 0}, Cost: ${formatCost(state.usage.costUsd)}`,
+				`Tokens: ${state.usage.totalTokens || 0}, Cost: ${
+					state.usage.costUsd === null
+						? "unavailable"
+						: formatCost(state.usage.costUsd)
+				}`,
 		);
 	}
 
@@ -866,10 +904,12 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		summary,
 	} satisfies SummaryMessage);
 
-	self.postMessage({
-		type: "payload",
-		payload: { ...payload, error: msg.error },
-	} satisfies PayloadMessage);
+	if (startMessage.captureRawPayload) {
+		self.postMessage({
+			type: "payload",
+			payload: { ...boundedPayload.payload, error: msg.error },
+		} satisfies PayloadMessage);
+	}
 
 	// Clean up
 	requests.delete(msg.requestId);
@@ -904,17 +944,20 @@ async function handleShutdown(): Promise<void> {
 	} satisfies ShutdownCompleteMessage);
 }
 
-function acknowledgeMessage(message: IncomingWorkerMessage): void {
-	if (!message.messageId) {
-		return;
+async function processIncomingMessage(
+	message: IncomingWorkerMessage,
+): Promise<void> {
+	switch (message.type) {
+		case "start":
+			return handleStart(message);
+		case "chunk":
+			handleChunk(message);
+			return;
+		case "end":
+			return handleEnd(message);
+		case "shutdown":
+			return handleShutdown();
 	}
-
-	self.postMessage({
-		type: "ack",
-		messageId: message.messageId,
-		requestId: "requestId" in message ? message.requestId : undefined,
-		acknowledgedType: message.type,
-	} satisfies AckMessage);
 }
 
 // Periodic cleanup of stale requests (safety net for orphaned requests)
@@ -942,25 +985,13 @@ if (typeof self !== "undefined" && typeof self.postMessage === "function") {
 	// Message handler
 	self.onmessage = (event: MessageEvent<IncomingWorkerMessage>) => {
 		const msg = event.data;
-		acknowledgeMessage(msg);
 
 		messageProcessingQueue = messageProcessingQueue
-			.then(async () => {
-				switch (msg.type) {
-					case "start":
-						await handleStart(msg);
-						break;
-					case "chunk":
-						handleChunk(msg);
-						break;
-					case "end":
-						await handleEnd(msg);
-						break;
-					case "shutdown":
-						await handleShutdown();
-						break;
-				}
-			})
+			.then(() =>
+				processWorkerMessageWithAck(msg, processIncomingMessage, (ack) =>
+					self.postMessage(ack),
+				),
+			)
 			.catch((error) => {
 				log.error("Failed to process usage worker message", error);
 			});

@@ -5,8 +5,17 @@ const logger = new Logger("async-db-writer");
 
 type DbJob = () => void | Promise<void>;
 
+export type DbWriteResult =
+	| { data: true; error: null }
+	| { data: null; error: Error };
+
+interface QueuedDbJob {
+	job: DbJob;
+	resolve: (result: DbWriteResult) => void;
+}
+
 export class AsyncDbWriter implements Disposable {
-	private queue: DbJob[] = [];
+	private queue: QueuedDbJob[] = [];
 	private running = false;
 	private intervalId: Timer | null = null;
 	private failureCount = 0;
@@ -18,10 +27,11 @@ export class AsyncDbWriter implements Disposable {
 		this.intervalId = setInterval(() => void this.processQueue(), 100);
 	}
 
-	enqueue(job: DbJob): void {
-		this.queue.push(job);
-		// Immediately try to process if not already running
-		void this.processQueue();
+	enqueue(job: DbJob): Promise<DbWriteResult> {
+		return new Promise((resolve) => {
+			this.queue.push({ job, resolve });
+			void this.processQueue();
+		});
 	}
 
 	private async processQueue(): Promise<void> {
@@ -37,13 +47,18 @@ export class AsyncDbWriter implements Disposable {
 		this.currentRunPromise = (async () => {
 			try {
 				while (this.queue.length > 0) {
-					const job = this.queue.shift();
-					if (!job) continue;
+					const queuedJob = this.queue.shift();
+					if (!queuedJob) continue;
 					try {
-						await job();
+						await queuedJob.job();
+						queuedJob.resolve({ data: true, error: null });
 					} catch (error) {
 						this.failureCount += 1;
 						logger.error("Failed to execute DB job", error);
+						queuedJob.resolve({
+							data: null,
+							error: error instanceof Error ? error : new Error(String(error)),
+						});
 					}
 				}
 			} finally {

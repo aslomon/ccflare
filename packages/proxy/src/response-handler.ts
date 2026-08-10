@@ -6,6 +6,13 @@ import {
 import type { Account, HttpMethod } from "@ccflare/types";
 import { trackProxyBackgroundTask } from "./background-tasks";
 import type { ResolvedProxyContext } from "./handlers";
+import {
+	createRawPayloadCaptureCounters,
+	limitCapturedBytes,
+	loadRawPayloadCapturePolicy,
+	type RawPayloadCapturePolicy,
+	readBoundedResponseBody,
+} from "./payload-capture";
 import type { ChunkMessage, EndMessage, StartMessage } from "./worker-messages";
 
 /**
@@ -36,6 +43,13 @@ export interface ResponseHandlerOptions {
 	retryAttempt: number;
 	failoverAttempts: number;
 	preExtractedModel?: string;
+	rawPayloadPolicy?: RawPayloadCapturePolicy;
+}
+
+const rawPayloadCaptureCounters = createRawPayloadCaptureCounters();
+
+export function getRawPayloadCaptureSnapshot() {
+	return rawPayloadCaptureCounters.snapshot();
 }
 
 /**
@@ -60,7 +74,9 @@ export async function forwardToClient(
 		retryAttempt, // Always 0 in new flow, but kept for message compatibility
 		failoverAttempts,
 		preExtractedModel,
+		rawPayloadPolicy,
 	} = options;
+	const capturePolicy = rawPayloadPolicy ?? loadRawPayloadCapturePolicy();
 
 	// Always strip compression headers *before* we do anything else
 	const response = withSanitizedProxyHeaders(responseRaw);
@@ -72,6 +88,11 @@ export async function forwardToClient(
 	const responseHeadersObj = Object.fromEntries(response.headers.entries());
 
 	const isStream = ctx.provider.isStreamingResponse?.(response) ?? false;
+	const limitedRequestBody = limitCapturedBytes(
+		requestBody ? new Uint8Array(requestBody) : null,
+		capturePolicy,
+		rawPayloadCaptureCounters,
+	);
 
 	// Send START message immediately
 	const startMessage: StartMessage = {
@@ -85,9 +106,12 @@ export async function forwardToClient(
 		upstreamRequestStartedAt,
 		responseHeadersReceivedAt,
 		requestHeaders: requestHeadersObj,
-		requestBody: requestBody
-			? Buffer.from(requestBody).toString("base64")
+		requestBody: limitedRequestBody.bytes
+			? Buffer.from(limitedRequestBody.bytes).toString("base64")
 			: null,
+		captureRawPayload: capturePolicy.enabled,
+		rawPayloadMaxBytes: capturePolicy.maxBytesPerBody,
+		requestBodyTruncated: limitedRequestBody.truncated,
 		responseStatus: response.status,
 		responseHeaders: responseHeadersObj,
 		isStream,
@@ -124,10 +148,16 @@ export async function forwardToClient(
 					const { value, done } = await reader.read();
 					if (done) break;
 					if (value) {
+						const limitedChunk = limitCapturedBytes(
+							value,
+							capturePolicy,
+							rawPayloadCaptureCounters,
+						);
 						const chunkMsg: ChunkMessage = {
 							type: "chunk",
 							requestId,
-							data: value,
+							data: limitedChunk.bytes ?? new Uint8Array(),
+							dataTruncated: limitedChunk.truncated,
 						};
 						ctx.usageWorker.postMessage(chunkMsg);
 					}
@@ -146,7 +176,7 @@ export async function forwardToClient(
 					requestId,
 					preExtractedModel,
 					success: false,
-					error: (err as Error).message,
+					error: err instanceof Error ? err.message : String(err),
 				};
 				ctx.usageWorker.postMessage(endMsg);
 			}
@@ -163,14 +193,24 @@ export async function forwardToClient(
 	const backgroundTask = (async () => {
 		try {
 			const clone = response.clone();
-			const bodyBuf = await clone.arrayBuffer();
+			const body = await readBoundedResponseBody(
+				clone,
+				capturePolicy.maxBytesPerBody,
+			);
+			if (body.bytes) {
+				if (capturePolicy.enabled) {
+					rawPayloadCaptureCounters.recordCaptured(body.droppedBytes);
+				} else {
+					rawPayloadCaptureCounters.recordDisabled();
+				}
+			}
 			const endMsg: EndMessage = {
 				type: "end",
 				requestId,
-				responseBody:
-					bodyBuf.byteLength > 0
-						? Buffer.from(bodyBuf).toString("base64")
-						: null,
+				responseBody: body.bytes
+					? Buffer.from(body.bytes).toString("base64")
+					: null,
+				responseBodyTruncated: body.truncated,
 				preExtractedModel,
 				success: isExpectedResponse(path, clone),
 			};
@@ -181,7 +221,7 @@ export async function forwardToClient(
 				requestId,
 				preExtractedModel,
 				success: false,
-				error: (err as Error).message,
+				error: err instanceof Error ? err.message : String(err),
 			};
 			ctx.usageWorker.postMessage(endMsg);
 		}

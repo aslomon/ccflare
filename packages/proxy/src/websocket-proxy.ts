@@ -11,6 +11,7 @@ import { resolveProxyContext } from "./handlers/proxy-types";
 import { createRequestMetadata } from "./handlers/request-handler";
 import { getValidAccessToken } from "./handlers/token-manager";
 import { normalizeOpenAIUsage, type OpenAIUsagePayload } from "./openai-usage";
+import { loadRawPayloadCapturePolicy } from "./payload-capture";
 import type {
 	ChunkMessage,
 	EndMessage,
@@ -59,6 +60,7 @@ export interface WebSocketProxySession {
 	activeTurn: WebSocketTurnState | null;
 	connectedAccount: Account | null;
 	pendingRequestBody: string | null;
+	pendingRequestBodyTruncated: boolean;
 	pendingRequestTimestamp: number | null;
 }
 
@@ -290,6 +292,7 @@ function startActiveTurn(
 
 	const requestId = crypto.randomUUID();
 	const timestamp = session.pendingRequestTimestamp ?? Date.now();
+	const capturePolicy = loadRawPayloadCapturePolicy();
 	const startMessage: StartMessage = {
 		type: "start",
 		requestId,
@@ -300,6 +303,9 @@ function startActiveTurn(
 		timestamp,
 		requestHeaders: session.requestHeaders,
 		requestBody: session.pendingRequestBody,
+		captureRawPayload: capturePolicy.enabled,
+		rawPayloadMaxBytes: capturePolicy.maxBytesPerBody,
+		requestBodyTruncated: session.pendingRequestBodyTruncated,
 		responseStatus: 101,
 		responseHeaders: {},
 		isStream: true,
@@ -324,6 +330,7 @@ function startActiveTurn(
 		hasPendingRequestBody: session.pendingRequestBody !== null,
 	});
 	session.pendingRequestBody = null;
+	session.pendingRequestBodyTruncated = false;
 	session.pendingRequestTimestamp = null;
 	session.requestContext.usageWorker.postMessage(startMessage);
 	emitTurnStartEvent(session, requestId, timestamp);
@@ -401,7 +408,12 @@ function capturePendingRequestBody(
 		return;
 	}
 
-	session.pendingRequestBody = Buffer.from(message).toString("base64");
+	const capturePolicy = loadRawPayloadCapturePolicy();
+	const encoded = textEncoder.encode(message);
+	const retained = encoded.subarray(0, capturePolicy.maxBytesPerBody);
+	session.pendingRequestBody = Buffer.from(retained).toString("base64");
+	session.pendingRequestBodyTruncated =
+		retained.byteLength < encoded.byteLength;
 	session.pendingRequestTimestamp = Date.now();
 	log.debug("Captured websocket request body for next tracked turn", {
 		provider: session.providerName,
@@ -701,6 +713,7 @@ export function handleWebSocketUpgradeRequest(
 		activeTurn: null,
 		connectedAccount: null,
 		pendingRequestBody: null,
+		pendingRequestBodyTruncated: false,
 		pendingRequestTimestamp: null,
 	};
 	websocketSessions.set(sessionId, session);

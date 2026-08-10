@@ -1,3 +1,5 @@
+import type { TimeRange } from "@ccflare/types";
+import { TIME_RANGES } from "@ccflare/ui";
 import {
 	useChartColorSequence,
 	useChartColors,
@@ -15,15 +17,27 @@ import {
 	CardHeader,
 	CardTitle,
 } from "../ui/card";
+import type { OverviewTimeSeriesPoint } from "./overview-data";
+
+function describeBucket(bucket: string): string {
+	switch (bucket) {
+		case "1m":
+			return "minute";
+		case "5m":
+			return "5 minutes";
+		case "1h":
+			return "hour";
+		case "1d":
+			return "day";
+		default:
+			return "period";
+	}
+}
 
 interface ChartsSectionProps {
-	timeSeriesData: Array<{
-		time: string;
-		requests: number;
-		successRate: number;
-		responseTime: number;
-		cost: string;
-	}>;
+	timeSeriesData: OverviewTimeSeriesPoint[];
+	timeRange: TimeRange;
+	bucket: string;
 	modelData: Array<{ name: string; value: number }>;
 	accountHealthData: Array<{
 		name: string;
@@ -35,12 +49,15 @@ interface ChartsSectionProps {
 
 export function ChartsSection({
 	timeSeriesData,
+	timeRange,
+	bucket,
 	modelData,
 	accountHealthData,
 	loading,
 }: ChartsSectionProps) {
 	const colors = useChartColors();
 	const chartColors = useChartColorSequence();
+	const rangeLabel = TIME_RANGES[timeRange].toLowerCase();
 
 	return (
 		<>
@@ -51,7 +68,7 @@ export function ChartsSection({
 					<CardHeader>
 						<CardTitle>Request Volume</CardTitle>
 						<CardDescription>
-							Requests per hour over the last 24 hours
+							Requests per {describeBucket(bucket)} over {rangeLabel}
 						</CardDescription>
 					</CardHeader>
 					<CardContent>

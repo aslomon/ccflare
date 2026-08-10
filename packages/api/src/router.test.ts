@@ -151,6 +151,17 @@ describe("APIRouter", () => {
 		expect(invalidProvider.status).toBe(400);
 	});
 
+	it("rejects request metadata retention below seven days", async () => {
+		const { router, config } = createRouterContext();
+
+		const response = await apiRequest(router, "POST", "/api/config/retention", {
+			requestDays: 6,
+		});
+
+		expect(response.status).toBe(400);
+		expect(config.getRequestRetentionDays()).toBe(365);
+	});
+
 	it("returns analytics with shared bucket metadata for the 1h range", async () => {
 		const { router, dbOps } = createRouterContext();
 		const account = dbOps.createAccount({
@@ -188,7 +199,11 @@ describe("APIRouter", () => {
 
 		const body = (await response.json()) as {
 			meta: { range: string; bucket: string };
-			timeSeries: Array<{ ts: number; requests: number }>;
+			timeSeries: Array<{
+				ts: number;
+				requests: number;
+				hasData?: boolean;
+			}>;
 			totals: { requests: number };
 		};
 		expect(body.meta).toEqual(
@@ -198,7 +213,8 @@ describe("APIRouter", () => {
 			}),
 		);
 		expect(body.totals.requests).toBe(1);
-		expect(body.timeSeries).toEqual([
+		expect(body.timeSeries).toHaveLength(61);
+		expect(body.timeSeries.filter((point) => point.hasData)).toEqual([
 			expect.objectContaining({
 				requests: 1,
 			}),
@@ -246,6 +262,17 @@ describe("APIRouter", () => {
 					pendingAcks: 0,
 					lastError: null,
 				},
+				payloadStore: {
+					writable: true,
+					storedBytes: 1024,
+					storedSegments: 2,
+					databaseBytes: 4096,
+					freeBytes: 1024 * 1024,
+					budgetBytes: 512 * 1024 * 1024,
+					targetBytes: 384 * 1024 * 1024,
+					databaseHardLimitBytes: 1024 * 1024 * 1024,
+					lastError: null,
+				},
 			}),
 		});
 
@@ -263,6 +290,7 @@ describe("APIRouter", () => {
 					queuedJobs: number;
 				};
 				usageWorker: { state: string };
+				payloadStore: { writable: boolean; storedBytes: number };
 			};
 		};
 		expect(body.runtime.asyncWriter).toEqual({
@@ -271,6 +299,10 @@ describe("APIRouter", () => {
 			queuedJobs: 0,
 		});
 		expect(body.runtime.usageWorker.state).toBe("ready");
+		expect(body.runtime.payloadStore).toMatchObject({
+			writable: true,
+			storedBytes: 1024,
+		});
 	});
 
 	it("validates account creation payloads", async () => {

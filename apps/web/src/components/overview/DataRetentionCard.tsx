@@ -1,3 +1,4 @@
+import { RETENTION_DAYS } from "@ccflare/core";
 import { useEffect, useState } from "react";
 import {
 	useCleanupNow,
@@ -36,7 +37,9 @@ export function DataRetentionCard() {
 	const validPayload =
 		Number.isFinite(payloadDays) && payloadDays >= 1 && payloadDays <= 365;
 	const validRequests =
-		Number.isFinite(requestDays) && requestDays >= 1 && requestDays <= 3650;
+		Number.isFinite(requestDays) &&
+		requestDays >= RETENTION_DAYS.REQUEST_MIN &&
+		requestDays <= RETENTION_DAYS.REQUEST_MAX;
 
 	return (
 		<Card>
@@ -90,8 +93,8 @@ export function DataRetentionCard() {
 						<span className="text-sm font-medium w-28">Requests</span>
 						<Input
 							type="number"
-							min={1}
-							max={3650}
+							min={RETENTION_DAYS.REQUEST_MIN}
+							max={RETENTION_DAYS.REQUEST_MAX}
 							value={requestDays}
 							onChange={(e) =>
 								setRequestDays(parseInt(e.target.value || "0", 10))

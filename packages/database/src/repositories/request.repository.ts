@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { Logger } from "@ccflare/logger";
 import {
 	type AccountProvider,
@@ -14,6 +15,11 @@ import {
 	toRequest,
 	toRequestWithAccountName,
 } from "../models/request-row";
+import {
+	type PayloadManifest,
+	type PayloadStore,
+	parsePayloadManifest,
+} from "../payload-store";
 import { BaseRepository } from "./base.repository";
 
 const log = new Logger("RequestRepository");
@@ -35,7 +41,7 @@ export interface RequestData {
 		promptTokens?: number;
 		completionTokens?: number;
 		totalTokens?: number;
-		costUsd?: number;
+		costUsd?: number | null;
 		inputTokens?: number;
 		cacheReadInputTokens?: number;
 		cacheCreationInputTokens?: number;
@@ -54,9 +60,19 @@ export interface RequestData {
 interface PersistRequestData extends RequestData {
 	timestamp?: number;
 	payload?: unknown;
+	linkagePayload?: unknown;
+	payloadTruncated?: boolean;
 }
 
 export class RequestRepository extends BaseRepository<RequestData> {
+	constructor(
+		db: Database,
+		private readonly payloadStore: PayloadStore | null = null,
+		private readonly allowInlinePayloads = true,
+	) {
+		super(db);
+	}
+
 	saveMeta(
 		id: string,
 		method: HttpMethod,
@@ -90,9 +106,9 @@ export class RequestRepository extends BaseRepository<RequestData> {
 
 	save(data: PersistRequestData): void {
 		const { usage, timings } = data;
-		const payloadJson =
-			data.payload === undefined ? undefined : JSON.stringify(data.payload);
-		const linkage = extractRequestLinkageFromPayload(data.payload);
+		const linkage = extractRequestLinkageFromPayload(
+			data.linkagePayload ?? data.payload,
+		);
 		const responseChainId = this.resolveResponseChainId(
 			linkage.previousResponseId,
 			linkage.responseId,
@@ -191,21 +207,26 @@ export class RequestRepository extends BaseRepository<RequestData> {
 				],
 			);
 
-			if (payloadJson !== undefined) {
-				this.run(
-					`
-					INSERT INTO request_payloads (id, json)
-					VALUES (?, ?)
-					ON CONFLICT(id) DO UPDATE SET json = excluded.json
-				`,
-					[data.id, payloadJson],
-				);
-			}
-
 			this.db.run("COMMIT");
 		} catch (error) {
 			this.db.run("ROLLBACK");
 			throw error;
+		}
+
+		this.savePayloadSafely(data.id, data.payload, data.payloadTruncated);
+	}
+
+	private savePayloadSafely(
+		id: string,
+		payload: unknown,
+		truncated = false,
+	): void {
+		if (payload === undefined) return;
+
+		try {
+			this.savePayload(id, payload, truncated);
+		} catch (error) {
+			log.warn(`Failed to persist request payload for ${id}`, error);
 		}
 	}
 
@@ -269,8 +290,23 @@ export class RequestRepository extends BaseRepository<RequestData> {
 	}
 
 	// Payload management
-	savePayload(id: string, data: unknown): void {
-		const json = JSON.stringify(data);
+	savePayload(id: string, data: unknown, truncated = false): void {
+		if (!this.payloadStore) {
+			if (this.allowInlinePayloads) this.saveInlinePayload(id, data);
+			return;
+		}
+
+		const saved = this.payloadStore.save(id, data, { truncated });
+		if (!saved.data) throw new Error(saved.error.message);
+		this.deleteEvictedManifestRows(saved.data.evictedFileNames);
+		this.upsertPayloadJson(id, JSON.stringify(saved.data.manifest));
+	}
+
+	private saveInlinePayload(id: string, data: unknown): void {
+		this.upsertPayloadJson(id, JSON.stringify(data));
+	}
+
+	private upsertPayloadJson(id: string, json: string): void {
 		this.run(
 			`
 			INSERT INTO request_payloads (id, json)
@@ -279,6 +315,19 @@ export class RequestRepository extends BaseRepository<RequestData> {
 		`,
 			[id, json],
 		);
+	}
+
+	private deleteEvictedManifestRows(fileNames: string[]): void {
+		if (fileNames.length === 0) return;
+		const evicted = new Set(fileNames);
+		for (const row of this.query<{ id: string; json: string }>(
+			`SELECT id, json FROM request_payloads`,
+		)) {
+			const manifest = this.parseManifestJson(row.json);
+			if (manifest && evicted.has(manifest.fileName)) {
+				this.run(`DELETE FROM request_payloads WHERE id = ?`, [row.id]);
+			}
+		}
 	}
 
 	getPayload(id: string): unknown | null {
@@ -290,7 +339,17 @@ export class RequestRepository extends BaseRepository<RequestData> {
 		if (!row) return null;
 
 		try {
-			return JSON.parse(row.json);
+			const parsed: unknown = JSON.parse(row.json);
+			const manifest = parsePayloadManifest(parsed);
+			if (!manifest || !this.payloadStore) return parsed;
+			const loaded = this.payloadStore.load(manifest);
+			if (loaded.error !== null) {
+				log.warn(
+					`Failed to load request payload for ${id}: ${loaded.error.message}`,
+				);
+				return null;
+			}
+			return loaded.data;
 		} catch (error) {
 			log.warn(`Failed to parse request payload for ${id}`, error);
 			return null;
@@ -298,7 +357,7 @@ export class RequestRepository extends BaseRepository<RequestData> {
 	}
 
 	listPayloads(limit = 50): Array<{ id: string; json: string }> {
-		return this.query<{ id: string; json: string }>(
+		const rows = this.query<{ id: string; json: string }>(
 			`
 			SELECT rp.id, rp.json 
 			FROM request_payloads rp
@@ -308,12 +367,13 @@ export class RequestRepository extends BaseRepository<RequestData> {
 		`,
 			[limit],
 		);
+		return this.hydrateRows(rows);
 	}
 
 	listPayloadsWithAccountNames(
 		limit = 50,
 	): Array<{ id: string; json: string; account_name: string | null }> {
-		return this.query<{
+		const rows = this.query<{
 			id: string;
 			json: string;
 			account_name: string | null;
@@ -328,12 +388,13 @@ export class RequestRepository extends BaseRepository<RequestData> {
 		`,
 			[limit],
 		);
+		return this.hydrateRows(rows);
 	}
 
 	listResponseChainPayloadsWithAccountNames(
 		requestId: string,
 	): Array<{ id: string; json: string; account_name: string | null }> {
-		return this.query<{
+		const rows = this.query<{
 			id: string;
 			json: string;
 			account_name: string | null;
@@ -369,6 +430,41 @@ export class RequestRepository extends BaseRepository<RequestData> {
 			`,
 			[requestId],
 		);
+		return this.hydrateRows(rows);
+	}
+
+	private hydrateRows<T extends { id: string; json: string }>(rows: T[]): T[] {
+		return rows.flatMap((row) => {
+			const hydratedJson = this.hydrateJson(row.id, row.json);
+			return hydratedJson === null ? [] : [{ ...row, json: hydratedJson }];
+		});
+	}
+
+	private hydrateJson(id: string, json: string): string | null {
+		const manifest = this.parseManifestJson(json);
+		if (!manifest || !this.payloadStore) return json;
+		const loaded = this.payloadStore.load(manifest);
+		if (loaded.error !== null) {
+			log.warn(
+				`Failed to hydrate request payload ${id}: ${loaded.error.message}`,
+			);
+			return null;
+		}
+		try {
+			return JSON.stringify(loaded.data);
+		} catch (error) {
+			log.warn(`Failed to serialize hydrated request payload ${id}`, error);
+			return null;
+		}
+	}
+
+	private parseManifestJson(json: string): PayloadManifest | null {
+		try {
+			const parsed: unknown = JSON.parse(json);
+			return parsePayloadManifest(parsed);
+		} catch {
+			return null;
+		}
 	}
 
 	// Analytics queries
@@ -622,25 +718,64 @@ export class RequestRepository extends BaseRepository<RequestData> {
 	}
 
 	deleteOlderThan(cutoffTs: number): number {
-		return this.runWithChanges(`DELETE FROM requests WHERE timestamp < ?`, [
-			cutoffTs,
-		]);
+		const manifests = this.selectPayloadManifests(
+			`SELECT rp.json FROM request_payloads rp JOIN requests r ON r.id = rp.id WHERE r.timestamp < ?`,
+			[cutoffTs],
+		);
+		const removed = this.runWithChanges(
+			`DELETE FROM requests WHERE timestamp < ?`,
+			[cutoffTs],
+		);
+		this.removeManifestFiles(manifests);
+		return removed;
 	}
 
 	clear(): number {
-		return this.runWithChanges(`DELETE FROM requests`);
+		const manifests = this.selectPayloadManifests(
+			`SELECT json FROM request_payloads`,
+		);
+		const removed = this.runWithChanges(`DELETE FROM requests`);
+		this.removeManifestFiles(manifests);
+		return removed;
 	}
 
 	deleteOrphanedPayloads(): number {
-		return this.runWithChanges(
+		const manifests = this.selectPayloadManifests(
+			`SELECT json FROM request_payloads WHERE id NOT IN (SELECT id FROM requests)`,
+		);
+		const removed = this.runWithChanges(
 			`DELETE FROM request_payloads WHERE id NOT IN (SELECT id FROM requests)`,
 		);
+		this.removeManifestFiles(manifests);
+		return removed;
 	}
 
 	deletePayloadsOlderThan(cutoffTs: number): number {
-		return this.runWithChanges(
+		const manifests = this.selectPayloadManifests(
+			`SELECT rp.json FROM request_payloads rp JOIN requests r ON r.id = rp.id WHERE r.timestamp < ?`,
+			[cutoffTs],
+		);
+		const removed = this.runWithChanges(
 			`DELETE FROM request_payloads WHERE id IN (SELECT id FROM requests WHERE timestamp < ?)`,
 			[cutoffTs],
 		);
+		this.removeManifestFiles(manifests);
+		return removed;
+	}
+
+	private selectPayloadManifests(
+		sql: string,
+		params: Array<string | number | boolean | null | Buffer> = [],
+	): PayloadManifest[] {
+		return this.query<{ json: string }>(sql, params).flatMap((row) => {
+			const manifest = this.parseManifestJson(row.json);
+			return manifest ? [manifest] : [];
+		});
+	}
+
+	private removeManifestFiles(manifests: PayloadManifest[]): void {
+		if (!this.payloadStore) return;
+		for (const manifest of manifests)
+			this.payloadStore.remove(manifest.fileName);
 	}
 }

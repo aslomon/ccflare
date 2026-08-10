@@ -63,6 +63,15 @@ export function getUsageWorkerHealth(): UsageWorkerHealthSnapshot {
 			queuedMessages: 0,
 			pendingAcks: 0,
 			lastError: null,
+			degradedSince: null,
+			droppedMessages: {
+				queuedChunks: 0,
+				replayedChunks: 0,
+				factMessages: 0,
+				shutdownMessages: 0,
+				usageFacts: 0,
+			},
+			payloadPersistenceFailures: 0,
 		}
 	);
 }

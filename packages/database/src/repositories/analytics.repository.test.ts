@@ -31,6 +31,7 @@ function insertRequest(
 		statusCode: number | null;
 		success: number | null;
 		responseTimeMs: number | null;
+		costUsd?: number | null;
 	},
 ): void {
 	db.run(
@@ -64,7 +65,7 @@ function insertRequest(
 			request.responseTimeMs,
 			0,
 			10,
-			0.25,
+			request.costUsd === undefined ? 0.25 : request.costUsd,
 		],
 	);
 }
@@ -120,6 +121,48 @@ describe("AnalyticsRepository", () => {
 					successRate: 50,
 				}),
 			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("reports token-bearing requests whose cost could not be priced", () => {
+		const db = new Database(":memory:");
+
+		try {
+			ensureSchema(db);
+			runMigrations(db);
+
+			const accountId = insertAccount(db);
+			const now = Date.now();
+
+			insertRequest(db, {
+				id: "request-priced",
+				timestamp: now - 2_000,
+				accountId,
+				statusCode: 200,
+				success: 1,
+				responseTimeMs: 120,
+				costUsd: 0.25,
+			});
+			insertRequest(db, {
+				id: "request-unpriced",
+				timestamp: now - 1_000,
+				accountId,
+				statusCode: 200,
+				success: 1,
+				responseTimeMs: 100,
+				costUsd: null,
+			});
+
+			const repository = new AnalyticsRepository(db);
+			const analytics = repository.getAnalytics({
+				startMs: now - 10_000,
+				bucketMs: 10_000,
+			});
+
+			expect(analytics.totals.totalCostUsd).toBe(0.25);
+			expect(analytics.totals.unpricedRequests).toBe(1);
 		} finally {
 			db.close();
 		}

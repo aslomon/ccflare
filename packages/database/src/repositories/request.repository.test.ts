@@ -1,6 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ensureSchema, runMigrations } from "../migrations";
+import { PayloadStore, type PayloadStorePolicy } from "../payload-store";
 import { RequestRepository } from "./request.repository";
 
 function encode(value: string): string {
@@ -60,6 +64,7 @@ function createPayload(options: {
 describe("RequestRepository", () => {
 	let db: Database;
 	let repository: RequestRepository;
+	const temporaryDirectories: string[] = [];
 
 	beforeEach(() => {
 		db = new Database(":memory:");
@@ -70,7 +75,30 @@ describe("RequestRepository", () => {
 
 	afterEach(() => {
 		db.close();
+		for (const directory of temporaryDirectories.splice(0)) {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
+
+	function createPayloadStore(
+		overrides: Partial<PayloadStorePolicy> = {},
+	): PayloadStore {
+		const root = mkdtempSync(join(tmpdir(), "ccflare-request-repository-"));
+		temporaryDirectories.push(root);
+		return new PayloadStore({
+			directory: join(root, "payloads"),
+			databasePath: join(root, "ccflare.db"),
+			policy: {
+				maxRawBytes: 1024 * 1024,
+				budgetBytes: 512 * 1024 * 1024,
+				targetBytes: 384 * 1024 * 1024,
+				databaseHardLimitBytes: 1024 * 1024 * 1024,
+				minimumFreeBytes: 0,
+				retentionMs: 7 * 24 * 60 * 60 * 1000,
+				...overrides,
+			},
+		});
+	}
 
 	it("tracks in-flight rows without marking them as failures and preserves the original timestamp on completion", () => {
 		repository.saveMeta(
@@ -204,7 +232,7 @@ describe("RequestRepository", () => {
 		]);
 	});
 
-	it("rolls back completion updates when payload persistence fails", () => {
+	it("commits completion usage when payload persistence fails", () => {
 		repository.saveMeta(
 			"request-rollback",
 			"POST",
@@ -237,30 +265,203 @@ describe("RequestRepository", () => {
 				errorMessage: null,
 				responseTime: 50,
 				failoverAttempts: 0,
+				usage: {
+					model: "gpt-4o-mini",
+					totalTokens: 123,
+					costUsd: 0.012345,
+				},
 				payload: { id: "request-rollback" },
 			}),
-		).toThrow("payload blocked");
+		).not.toThrow();
 
 		const persistedRow = db
-			.query(
-				`SELECT timestamp, success, response_time_ms FROM requests WHERE id = ?`,
+			.query<
+				{
+					timestamp: number;
+					success: 0 | 1 | null;
+					response_time_ms: number | null;
+					total_tokens: number | null;
+					cost_usd: number | null;
+				},
+				[string]
+			>(
+				`SELECT timestamp, success, response_time_ms, total_tokens, cost_usd
+				 FROM requests WHERE id = ?`,
 			)
-			.get("request-rollback") as {
-			timestamp: number;
-			success: 0 | 1 | null;
-			response_time_ms: number | null;
-		};
+			.get("request-rollback");
 
 		expect(persistedRow).toEqual({
 			timestamp: 3_000,
-			success: null,
-			response_time_ms: null,
+			success: 1,
+			response_time_ms: 50,
+			total_tokens: 123,
+			cost_usd: 0.012345,
 		});
 		expect(
 			db
 				.query(`SELECT json FROM request_payloads WHERE id = ?`)
 				.get("request-rollback"),
 		).toBeNull();
+	});
+
+	it("commits completion usage when payload serialization fails", () => {
+		const cyclicPayload: { id: string; self?: unknown } = {
+			id: "request-cyclic",
+		};
+		cyclicPayload.self = cyclicPayload;
+
+		expect(() =>
+			repository.save({
+				id: "request-cyclic",
+				method: "POST",
+				path: "/v1/openai/responses",
+				provider: "openai",
+				upstreamPath: "/responses",
+				accountUsed: null,
+				statusCode: 200,
+				success: true,
+				errorMessage: null,
+				responseTime: 75,
+				failoverAttempts: 0,
+				usage: {
+					model: "gpt-4o-mini",
+					totalTokens: 456,
+					costUsd: 0.06789,
+				},
+				payload: cyclicPayload,
+			}),
+		).not.toThrow();
+
+		const persistedRow = db
+			.query<
+				{
+					success: 0 | 1 | null;
+					total_tokens: number | null;
+					cost_usd: number | null;
+				},
+				[string]
+			>(`SELECT success, total_tokens, cost_usd FROM requests WHERE id = ?`)
+			.get("request-cyclic");
+
+		expect(persistedRow).toEqual({
+			success: 1,
+			total_tokens: 456,
+			cost_usd: 0.06789,
+		});
+		expect(
+			db
+				.query(`SELECT json FROM request_payloads WHERE id = ?`)
+				.get("request-cyclic"),
+		).toBeNull();
+	});
+
+	it("stores payloads as zstd manifests and hydrates them transparently", () => {
+		const payloadStore = createPayloadStore();
+		repository = new RequestRepository(db, payloadStore);
+		const payload = { id: "request-zstd", value: "compress me".repeat(20) };
+
+		repository.save({
+			id: "request-zstd",
+			method: "POST",
+			path: "/v1/openai/responses",
+			provider: "openai",
+			upstreamPath: "/responses",
+			accountUsed: null,
+			statusCode: 200,
+			success: true,
+			errorMessage: null,
+			responseTime: 10,
+			failoverAttempts: 0,
+			payload,
+			payloadTruncated: true,
+		});
+
+		const manifestRow = db
+			.query<{ json: string }, []>(`SELECT json FROM request_payloads`)
+			.get();
+		if (!manifestRow) throw new Error("Expected payload manifest row");
+		const manifest: unknown = JSON.parse(manifestRow.json);
+		expect(manifest).toMatchObject({
+			storage: "zstd-segment",
+			version: 1,
+			truncated: true,
+		});
+		expect(repository.getPayload("request-zstd")).toEqual(payload);
+		expect(repository.listPayloads()).toEqual([
+			{ id: "request-zstd", json: JSON.stringify(payload) },
+		]);
+	});
+
+	it("removes evicted manifests when the payload budget prunes segments", () => {
+		const root = mkdtempSync(join(tmpdir(), "ccflare-request-budget-"));
+		temporaryDirectories.push(root);
+		const payloadStore = new PayloadStore({
+			directory: join(root, "payloads"),
+			databasePath: join(root, "ccflare.db"),
+			policy: {
+				maxRawBytes: 1024,
+				budgetBytes: 150,
+				targetBytes: 90,
+				databaseHardLimitBytes: 1024 * 1024,
+				minimumFreeBytes: 0,
+				retentionMs: 7 * 24 * 60 * 60 * 1000,
+			},
+			compress: (bytes) => bytes,
+			decompress: (bytes) => bytes,
+			readFrameContentSize: (bytes) => bytes.byteLength,
+		});
+		repository = new RequestRepository(db, payloadStore);
+
+		for (const id of ["old", "middle", "new"]) {
+			repository.save({
+				id,
+				method: "POST",
+				path: "/v1/openai/responses",
+				provider: "openai",
+				upstreamPath: "/responses",
+				accountUsed: null,
+				statusCode: 200,
+				success: true,
+				errorMessage: null,
+				responseTime: 10,
+				failoverAttempts: 0,
+				payload: { value: id.repeat(20) },
+			});
+		}
+
+		const storedRows = db
+			.query<{ id: string }, []>(`SELECT id FROM request_payloads ORDER BY id`)
+			.all();
+		expect(storedRows.length).toBeLessThan(3);
+		expect(payloadStore.snapshot().storedBytes).toBeLessThanOrEqual(90);
+	});
+
+	it("removes segment files when payload retention deletes their manifests", () => {
+		const payloadStore = createPayloadStore();
+		repository = new RequestRepository(db, payloadStore);
+		repository.save({
+			id: "expired",
+			method: "POST",
+			path: "/v1/openai/responses",
+			provider: "openai",
+			upstreamPath: "/responses",
+			accountUsed: null,
+			statusCode: 200,
+			success: true,
+			errorMessage: null,
+			responseTime: 10,
+			failoverAttempts: 0,
+			timestamp: 1,
+			payload: { value: "expired" },
+		});
+		expect(payloadStore.snapshot().storedSegments).toBe(1);
+
+		repository.deletePayloadsOlderThan(2);
+
+		expect(payloadStore.snapshot().storedSegments).toBe(0);
+		expect(
+			readdirSync(join(temporaryDirectories[0] ?? "", "payloads")),
+		).toEqual([]);
 	});
 
 	it("stores conversation linkage and returns ancestor payloads up to the requested row", () => {

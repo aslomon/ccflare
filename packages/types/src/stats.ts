@@ -64,6 +64,7 @@ export interface StatsWithAccounts extends Stats {
 export interface TimePoint {
 	ts: number; // period start (ms)
 	model?: string; // Optional model name for per-model time series
+	hasData?: boolean; // False for an explicitly represented empty bucket
 	requests: number;
 	tokens: number;
 	costUsd: number;
@@ -104,9 +105,22 @@ export interface UsageWorkerHealth {
 	lastError: string | null;
 }
 
+export interface PayloadStoreHealth {
+	writable: boolean;
+	storedBytes: number;
+	storedSegments: number;
+	databaseBytes: number;
+	freeBytes: number;
+	budgetBytes: number;
+	targetBytes: number;
+	databaseHardLimitBytes: number;
+	lastError: string | null;
+}
+
 export interface RuntimeHealth {
 	asyncWriter: AsyncWriterHealth;
 	usageWorker: UsageWorkerHealth;
+	payloadStore: PayloadStoreHealth;
 }
 
 export interface AnalyticsResponse {
@@ -122,6 +136,7 @@ export interface AnalyticsResponse {
 		avgResponseTime: number;
 		totalTokens: number;
 		totalCostUsd: number;
+		unpricedRequests: number;
 		avgTokensPerSecond: number | null;
 	};
 	timeSeries: TimePoint[];

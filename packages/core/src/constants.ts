@@ -86,6 +86,13 @@ export const LIMITS = {
 	},
 } as const;
 
+export const RETENTION_DAYS = {
+	PAYLOAD_MIN: 1,
+	PAYLOAD_MAX: 365,
+	REQUEST_MIN: 7,
+	REQUEST_MAX: 3650,
+} as const;
+
 // HTTP status codes
 export const HTTP_STATUS = {
 	OK: 200,

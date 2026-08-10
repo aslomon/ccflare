@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { Logger } from "@ccflare/logger";
-import { extractRequestLinkageFromPayload } from "@ccflare/types";
 import { addPerformanceIndexes } from "./performance-indexes";
+import { runRequestLinkageMigration } from "./request-linkage-migration";
 
 const log = new Logger("DatabaseMigrations");
 
@@ -94,7 +94,7 @@ function shouldMigrateRequestsTable(columns: TableInfoRow[]): boolean {
 	);
 }
 
-function ensureRequestLinkageColumns(db: Database): void {
+function ensureRequestLinkageColumns(db: Database): boolean {
 	const columns = getTableInfo(db, "requests");
 	const requestColumns = [
 		["response_id", "TEXT"],
@@ -106,126 +106,15 @@ function ensureRequestLinkageColumns(db: Database): void {
 		["upstream_ttfb_ms", "INTEGER"],
 		["streaming_duration_ms", "INTEGER"],
 	] as const;
+	let addedColumn = false;
 
 	for (const [columnName, columnType] of requestColumns) {
 		if (!hasColumn(columns, columnName)) {
 			db.run(`ALTER TABLE requests ADD COLUMN ${columnName} ${columnType}`);
+			addedColumn = true;
 		}
 	}
-}
-
-function backfillRequestLinkageColumns(db: Database): void {
-	const missingCount = db
-		.query(
-			`
-				SELECT COUNT(*) AS count
-				FROM requests
-				WHERE response_chain_id IS NULL OR client_session_id IS NULL
-			`,
-		)
-		.get() as { count: number } | null;
-
-	if (!missingCount || missingCount.count === 0) {
-		return;
-	}
-
-	const rows = db
-		.query(
-			`
-				SELECT
-					r.id,
-					r.timestamp,
-					r.response_id,
-					r.previous_response_id,
-					r.response_chain_id,
-					r.client_session_id,
-					rp.json
-				FROM requests r
-				LEFT JOIN request_payloads rp ON rp.id = r.id
-				ORDER BY r.timestamp ASC
-			`,
-		)
-		.all() as Array<{
-		id: string;
-		timestamp: number;
-		response_id: string | null;
-		previous_response_id: string | null;
-		response_chain_id: string | null;
-		client_session_id: string | null;
-		json: string | null;
-	}>;
-
-	const responseToChain = new Map<string, string>();
-	let updatedRows = 0;
-
-	const updateStmt = db.prepare(`
-		UPDATE requests
-		SET
-			previous_response_id = ?,
-			response_id = ?,
-			response_chain_id = ?,
-			client_session_id = ?
-		WHERE id = ?
-	`);
-
-	db.run("BEGIN");
-	try {
-		for (const row of rows) {
-			let payload: unknown = null;
-			if (typeof row.json === "string") {
-				try {
-					payload = JSON.parse(row.json);
-				} catch {
-					payload = null;
-				}
-			}
-
-			const extracted = extractRequestLinkageFromPayload(payload);
-			const previousResponseId =
-				extracted.previousResponseId ?? row.previous_response_id ?? null;
-			const responseId = extracted.responseId ?? row.response_id ?? null;
-			let responseChainId = row.response_chain_id;
-			const clientSessionId =
-				extracted.clientSessionId ?? row.client_session_id ?? null;
-
-			if (!responseChainId) {
-				if (previousResponseId) {
-					responseChainId =
-						responseToChain.get(previousResponseId) ?? previousResponseId;
-				} else {
-					responseChainId = responseId ?? row.id;
-				}
-			}
-
-			if (responseId && responseChainId) {
-				responseToChain.set(responseId, responseChainId);
-			}
-
-			if (
-				row.previous_response_id !== previousResponseId ||
-				row.response_id !== responseId ||
-				row.response_chain_id !== responseChainId ||
-				row.client_session_id !== clientSessionId
-			) {
-				updateStmt.run(
-					previousResponseId,
-					responseId,
-					responseChainId,
-					clientSessionId,
-					row.id,
-				);
-				updatedRows++;
-			}
-		}
-		db.run("COMMIT");
-	} catch (e) {
-		db.run("ROLLBACK");
-		throw e;
-	}
-
-	if (updatedRows > 0) {
-		log.info(`Backfilled request linkage for ${updatedRows} requests`);
-	}
+	return addedColumn;
 }
 
 function migrateAccountsTable(db: Database, columns: TableInfoRow[]): void {
@@ -571,11 +460,12 @@ export function runMigrations(db: Database): void {
 	}
 
 	const requestsInfo = getTableInfo(db, "requests");
-	if (shouldMigrateRequestsTable(requestsInfo)) {
+	const migratedRequests = shouldMigrateRequestsTable(requestsInfo);
+	if (migratedRequests) {
 		migrateRequestsTable(db, requestsInfo);
 	}
-	ensureRequestLinkageColumns(db);
-	backfillRequestLinkageColumns(db);
+	const addedLinkageColumns = ensureRequestLinkageColumns(db);
+	runRequestLinkageMigration(db, migratedRequests || addedLinkageColumns);
 
 	db.run("DROP TABLE IF EXISTS agent_preferences");
 	db.run("DROP TABLE IF EXISTS oauth_sessions");

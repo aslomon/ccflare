@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Disposable } from "@ccflare/core";
+import { Logger } from "@ccflare/logger";
 import type {
 	Account,
 	AccountProvider,
@@ -15,6 +16,8 @@ import type {
 import { ensureSchema, runMigrations } from "./migrations";
 import type { RequestWithAccountName } from "./models/request-row";
 import { resolveDbPath } from "./paths";
+import type { PayloadStoreSnapshot } from "./payload-store";
+import { loadPayloadStorePolicy, PayloadStore } from "./payload-store";
 import {
 	AccountRepository,
 	type CreateAccountData,
@@ -36,6 +39,22 @@ export interface RuntimeConfig {
 	sessionDurationMs?: number;
 }
 
+const log = new Logger("DatabaseOperations");
+
+function unavailablePayloadStoreSnapshot(): PayloadStoreSnapshot {
+	return {
+		writable: false,
+		storedBytes: 0,
+		storedSegments: 0,
+		databaseBytes: 0,
+		freeBytes: 0,
+		budgetBytes: 512 * 1024 * 1024,
+		targetBytes: 384 * 1024 * 1024,
+		databaseHardLimitBytes: 1024 * 1024 * 1024,
+		lastError: "storage_failed",
+	};
+}
+
 /**
  * DatabaseOperations using Repository Pattern
  * Provides a clean, organized interface for database operations
@@ -52,6 +71,7 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 	private authSessions: AuthSessionRepository;
 	private strategy: StrategyRepository;
 	private stats: StatsRepository;
+	private payloadStore: PayloadStore | null;
 
 	constructor(dbPath?: string) {
 		const resolvedPath = dbPath ?? resolveDbPath();
@@ -74,7 +94,20 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 		// Initialize repositories
 		this.accounts = new AccountRepository(this.db);
 		this.analytics = new AnalyticsRepository(this.db);
-		this.requests = new RequestRepository(this.db);
+		try {
+			this.payloadStore = new PayloadStore({
+				directory: join(dir, "payloads"),
+				databasePath: resolvedPath,
+				policy: loadPayloadStorePolicy(),
+			});
+		} catch (error) {
+			this.payloadStore = null;
+			log.warn(
+				"Payload storage unavailable; metadata persistence remains active",
+				error,
+			);
+		}
+		this.requests = new RequestRepository(this.db, this.payloadStore, false);
 		this.authSessions = new AuthSessionRepository(this.db);
 		this.strategy = new StrategyRepository(this.db);
 		this.stats = new StatsRepository(this.db);
@@ -86,6 +119,15 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 
 	getDatabase(): Database {
 		return this.db;
+	}
+
+	getPayloadStoreSnapshot(): PayloadStoreSnapshot {
+		try {
+			return this.payloadStore?.snapshot() ?? unavailablePayloadStoreSnapshot();
+		} catch (error) {
+			log.warn("Payload storage health check failed", error);
+			return unavailablePayloadStoreSnapshot();
+		}
 	}
 
 	// Account operations delegated to repository
@@ -237,6 +279,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 		options?: {
 			timestamp?: number;
 			payload?: unknown;
+			linkagePayload?: unknown;
+			payloadTruncated?: boolean;
 			timings?: RequestData["timings"];
 		},
 	): void {
@@ -255,6 +299,8 @@ export class DatabaseOperations implements StrategyStore, Disposable {
 			usage,
 			timestamp: options?.timestamp,
 			payload: options?.payload,
+			linkagePayload: options?.linkagePayload,
+			payloadTruncated: options?.payloadTruncated,
 			timings: options?.timings,
 		});
 	}

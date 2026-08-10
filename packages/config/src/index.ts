@@ -5,6 +5,7 @@ import {
 	DEFAULT_STRATEGY,
 	isValidStrategy,
 	NETWORK,
+	RETENTION_DAYS,
 	TIME_CONSTANTS,
 } from "@ccflare/core";
 import { Logger } from "@ccflare/logger";
@@ -212,15 +213,31 @@ export class Config extends EventEmitter {
 		const fromEnv = process.env.REQUEST_RETENTION_DAYS;
 		if (fromEnv) {
 			const n = parseInt(fromEnv, 10);
-			if (!Number.isNaN(n)) return this.clamp(n, 1, 3650);
+			if (!Number.isNaN(n)) {
+				return this.clamp(
+					n,
+					RETENTION_DAYS.REQUEST_MIN,
+					RETENTION_DAYS.REQUEST_MAX,
+				);
+			}
 		}
 		const fromFile = this.data.request_retention_days;
-		if (typeof fromFile === "number") return this.clamp(fromFile, 1, 3650);
+		if (typeof fromFile === "number") {
+			return this.clamp(
+				fromFile,
+				RETENTION_DAYS.REQUEST_MIN,
+				RETENTION_DAYS.REQUEST_MAX,
+			);
+		}
 		return 365; // default metadata retention
 	}
 
 	setRequestRetentionDays(days: number): void {
-		const clamped = this.clamp(days, 1, 3650);
+		const clamped = this.clamp(
+			days,
+			RETENTION_DAYS.REQUEST_MIN,
+			RETENTION_DAYS.REQUEST_MAX,
+		);
 		this.set("request_retention_days", clamped);
 	}
 

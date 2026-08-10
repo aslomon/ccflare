@@ -17,6 +17,7 @@ import {
 	isTimeRange,
 	type TimeRange,
 } from "@ccflare/types";
+import { fillMissingTimeBuckets } from "../analytics-series";
 import type { APIContext } from "../types";
 
 const log = new Logger("AnalyticsHandler");
@@ -106,7 +107,14 @@ export function createAnalyticsHandler(context: APIContext) {
 			});
 			const analytics = context.dbOps.getAnalytics(query.options);
 
-			let transformedTimeSeries = analytics.timeSeries;
+			let transformedTimeSeries = includeModelBreakdown
+				? analytics.timeSeries
+				: fillMissingTimeBuckets(
+						analytics.timeSeries,
+						query.options.startMs,
+						query.endMs,
+						query.options.bucketMs,
+					);
 
 			// Apply cumulative transformation if requested
 			if (isCumulative && !includeModelBreakdown) {

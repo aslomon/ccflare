@@ -104,6 +104,7 @@ export function bootstrapRuntime(
 				queuedJobs: asyncWriter.getQueueSize(),
 			},
 			usageWorker: getUsageWorkerHealth(),
+			payloadStore: dbOps.getPayloadStoreSnapshot(),
 		}),
 	});
 

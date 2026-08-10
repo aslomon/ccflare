@@ -10,6 +10,7 @@ export interface MetricCardProps {
 	icon: React.ComponentType<{ className?: string }>;
 	trend?: "up" | "down" | "flat";
 	trendPeriod?: string;
+	note?: string;
 }
 
 export function MetricCard({
@@ -19,6 +20,7 @@ export function MetricCard({
 	icon: Icon,
 	trend,
 	trendPeriod,
+	note,
 }: MetricCardProps) {
 	const trendElement = trend !== "flat" && change !== undefined && (
 		<div
@@ -59,6 +61,7 @@ export function MetricCard({
 				<div className="space-y-1">
 					<p className="text-sm text-muted-foreground">{title}</p>
 					<p className="text-2xl font-bold">{value}</p>
+					{note && <p className="text-xs text-warning">{note}</p>}
 				</div>
 			</CardContent>
 		</Card>

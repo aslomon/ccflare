@@ -689,4 +689,41 @@ describe("database schema", () => {
 			db.close();
 		}
 	});
+
+	it("does not scan payloads when the current linkage schema already exists", () => {
+		const db = new Database(":memory:");
+
+		try {
+			ensureSchema(db);
+			db.run(
+				`INSERT INTO requests (
+					id, timestamp, method, path, provider, upstream_path
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				["request-after-migration", 1_000, "POST", "/v1", "openai", "/v1"],
+			);
+			db.run(`INSERT INTO request_payloads (id, json) VALUES (?, ?)`, [
+				"request-after-migration",
+				JSON.stringify({
+					id: "request-after-migration",
+					response: {
+						body: encode(
+							'event: response.created\ndata: {"response":{"id":"late-response"}}',
+						),
+					},
+				}),
+			]);
+
+			runMigrations(db);
+
+			const row = db
+				.query<
+					{ response_id: string | null; response_chain_id: string | null },
+					[string]
+				>(`SELECT response_id, response_chain_id FROM requests WHERE id = ?`)
+				.get("request-after-migration");
+			expect(row).toEqual({ response_id: null, response_chain_id: null });
+		} finally {
+			db.close();
+		}
+	});
 });

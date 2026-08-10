@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { TIME_CONSTANTS } from "./constants";
 
 export interface TokenBreakdown {
@@ -10,29 +11,64 @@ export interface TokenBreakdown {
 	cacheCreationInputTokens?: number;
 }
 
-interface ModelCost {
-	input: number;
-	output: number;
-	cache_read?: number;
-	cache_write?: number;
+export interface CostEstimateResult {
+	readonly costUsd: number | null;
+	readonly status: "estimated" | "unavailable";
+	readonly source: "models.dev" | "none";
 }
 
-interface ModelDef {
-	id: string;
-	name: string;
-	cost?: ModelCost;
-}
+const PriceSchema = z.number().finite().nonnegative();
+const TokenCountSchema = z
+	.number()
+	.int()
+	.nonnegative()
+	.max(Number.MAX_SAFE_INTEGER);
 
-interface ApiResponse {
-	[provider: string]: {
-		models?: {
-			[modelId: string]: ModelDef;
-		};
-	};
-}
+const ModelCostSchema = z
+	.object({
+		input: PriceSchema.optional(),
+		output: PriceSchema.optional(),
+		cache_read: PriceSchema.optional(),
+		cache_write: PriceSchema.optional(),
+	})
+	.passthrough();
+
+const ModelDefinitionSchema = z
+	.object({
+		id: z.string().min(1),
+		name: z.string().min(1),
+		cost: ModelCostSchema.optional(),
+	})
+	.passthrough();
+
+const ProviderSchema = z
+	.object({
+		models: z.record(ModelDefinitionSchema).optional(),
+	})
+	.passthrough();
+
+const PricingCatalogueSchema = z.record(ProviderSchema);
+const TokenBreakdownSchema = z.object({
+	inputTokens: TokenCountSchema.optional(),
+	outputTokens: TokenCountSchema.optional(),
+	cacheReadInputTokens: TokenCountSchema.optional(),
+	cacheCreationInputTokens: TokenCountSchema.optional(),
+});
+
+type ApiResponse = z.infer<typeof PricingCatalogueSchema>;
+type ModelCost = z.infer<typeof ModelCostSchema>;
 
 interface Logger {
 	warn(message: string, ...args: unknown[]): void;
+}
+
+function parseCatalogue(data: unknown): ApiResponse | null {
+	const result = PricingCatalogueSchema.safeParse(data);
+	return result.success ? result.data : null;
+}
+
+function unavailableCost(): CostEstimateResult {
+	return { costUsd: null, status: "unavailable", source: "none" };
 }
 
 class PriceCatalogue {
@@ -81,22 +117,21 @@ class PriceCatalogue {
 			const cachePath = this.getCachePath();
 			const stats = await fs.stat(cachePath);
 			const age = Date.now() - stats.mtime.getTime();
-
-			if (age < this.getCacheDurationMs()) {
-				const content = await fs.readFile(cachePath, "utf-8");
-				return JSON.parse(content);
+			if (age >= this.getCacheDurationMs()) {
+				return null;
 			}
+			const content = await fs.readFile(cachePath, "utf-8");
+			const data: unknown = JSON.parse(content);
+			return parseCatalogue(data);
 		} catch {
-			// Cache miss or error - that's ok
+			return null;
 		}
-		return null;
 	}
 
 	private async saveToCache(data: ApiResponse): Promise<void> {
 		try {
 			await this.ensureCacheDir();
-			const cachePath = this.getCachePath();
-			await fs.writeFile(cachePath, JSON.stringify(data, null, 2));
+			await fs.writeFile(this.getCachePath(), JSON.stringify(data, null, 2));
 		} catch (error) {
 			this.logger?.warn("Failed to save pricing cache: %s", error);
 		}
@@ -108,7 +143,11 @@ class PriceCatalogue {
 			if (!response.ok) {
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
-			const data = await response.json();
+			const rawData: unknown = await response.json();
+			const data = parseCatalogue(rawData);
+			if (!data) {
+				throw new Error("Invalid models.dev pricing catalogue");
+			}
 			await this.saveToCache(data);
 			return data;
 		} catch (error) {
@@ -117,8 +156,7 @@ class PriceCatalogue {
 		}
 	}
 
-	async getPricing(): Promise<ApiResponse> {
-		// Return cached data if available
+	async getPricing(): Promise<ApiResponse | null> {
 		if (
 			this.priceData &&
 			Date.now() - this.lastFetch < this.getCacheDurationMs()
@@ -126,38 +164,24 @@ class PriceCatalogue {
 			return this.priceData;
 		}
 
-		// Always attempt to fetch fresh pricing first (once per process start)
-		let data = await this.fetchRemote();
-
-		// If remote fetch failed (offline or error), fall back to disk cache
-		if (!data) {
-			data = await this.loadFromCache();
+		const data = (await this.fetchRemote()) ?? (await this.loadFromCache());
+		if (data) {
+			this.priceData = data;
+			this.lastFetch = Date.now();
 		}
-
-		// If there is no remote or cached catalogue, return an empty catalogue.
-		if (!data) {
-			data = {};
-		}
-
-		this.priceData = data;
-		this.lastFetch = Date.now();
 		return data;
 	}
 
 	warnOnce(modelId: string): void {
-		if (!this.warnedModels.has(modelId)) {
-			this.warnedModels.add(modelId);
-			this.logger?.warn(
-				"Price for model %s not found - cost set to 0",
-				modelId,
-			);
+		if (this.warnedModels.has(modelId)) {
+			return;
 		}
+		this.warnedModels.add(modelId);
+		this.logger?.warn("Pricing unavailable for model %s", modelId);
 	}
 }
 
-/**
- * Set the logger for pricing warnings
- */
+/** Set the logger for pricing warnings. */
 export function setPricingLogger(logger: Logger): void {
 	PriceCatalogue.get().setLogger(logger);
 }
@@ -167,60 +191,77 @@ function findModelCost(
 	modelId: string,
 ): ModelCost | null {
 	for (const provider of Object.values(pricing)) {
-		const model = provider.models?.[modelId];
-		if (model?.cost) {
-			return model.cost;
+		const cost = provider.models?.[modelId]?.cost;
+		if (cost) {
+			return cost;
 		}
 	}
 	return null;
 }
 
+function categoryCostUnits(
+	tokenCount: number | undefined,
+	pricePerMillion: number | undefined,
+): number | null {
+	if (!tokenCount) {
+		return 0;
+	}
+	if (pricePerMillion === undefined) {
+		return null;
+	}
+	return tokenCount * pricePerMillion;
+}
+
+function calculateCost(cost: ModelCost, tokens: TokenBreakdown): number | null {
+	const categoryCosts = [
+		categoryCostUnits(tokens.inputTokens, cost.input),
+		categoryCostUnits(tokens.outputTokens, cost.output),
+		categoryCostUnits(tokens.cacheReadInputTokens, cost.cache_read),
+		categoryCostUnits(tokens.cacheCreationInputTokens, cost.cache_write),
+	];
+	let totalCostUnits = 0;
+	for (const amount of categoryCosts) {
+		if (amount === null) {
+			return null;
+		}
+		totalCostUnits += amount;
+	}
+	const totalCost = totalCostUnits / 1_000_000;
+	return Number.isFinite(totalCost) ? totalCost : null;
+}
+
+/** Estimate request cost from a validated models.dev catalogue. */
+export async function estimateCostResult(
+	modelId: string,
+	tokens: TokenBreakdown,
+): Promise<CostEstimateResult> {
+	const catalogue = PriceCatalogue.get();
+	const normalizedModelId = modelId.trim();
+	const parsedTokens = TokenBreakdownSchema.safeParse(tokens);
+	if (!normalizedModelId || !parsedTokens.success) {
+		catalogue.warnOnce(modelId);
+		return unavailableCost();
+	}
+
+	const pricing = await catalogue.getPricing();
+	const cost = pricing ? findModelCost(pricing, normalizedModelId) : null;
+	const costUsd = cost ? calculateCost(cost, parsedTokens.data) : null;
+	if (costUsd === null) {
+		catalogue.warnOnce(normalizedModelId);
+		return unavailableCost();
+	}
+
+	return { costUsd, status: "estimated", source: "models.dev" };
+}
+
 /**
- * Estimate the total cost in USD for a request based on token counts
- * @returns Cost in dollars (NOT per million)
+ * Legacy numeric estimator. Prefer estimateCostResult when unavailable pricing
+ * must remain distinct from a legitimate zero-dollar estimate.
  */
 export async function estimateCostUSD(
 	modelId: string,
 	tokens: TokenBreakdown,
 ): Promise<number> {
-	const catalogue = PriceCatalogue.get();
-
-	try {
-		const pricing = await catalogue.getPricing();
-		const normalizedModelId = modelId.trim();
-		if (!normalizedModelId) {
-			throw new Error("Model id is empty");
-		}
-
-		const cost = findModelCost(pricing, normalizedModelId);
-		if (!cost) {
-			throw new Error(
-				`Model ${normalizedModelId} not found in pricing catalogue`,
-			);
-		}
-
-		let totalCost = 0;
-
-		if (tokens.inputTokens && cost.input !== undefined) {
-			totalCost += tokens.inputTokens * (cost.input / 1_000_000);
-		}
-
-		if (tokens.outputTokens && cost.output !== undefined) {
-			totalCost += tokens.outputTokens * (cost.output / 1_000_000);
-		}
-
-		if (tokens.cacheReadInputTokens && cost.cache_read !== undefined) {
-			totalCost += tokens.cacheReadInputTokens * (cost.cache_read / 1_000_000);
-		}
-
-		if (tokens.cacheCreationInputTokens && cost.cache_write !== undefined) {
-			totalCost +=
-				tokens.cacheCreationInputTokens * (cost.cache_write / 1_000_000);
-		}
-
-		return totalCost;
-	} catch (_error) {
-		catalogue.warnOnce(modelId);
-		return 0;
-	}
+	const result = await estimateCostResult(modelId, tokens);
+	return result.costUsd ?? 0;
 }

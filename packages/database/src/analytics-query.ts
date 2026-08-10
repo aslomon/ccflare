@@ -53,6 +53,7 @@ export interface BuildAnalyticsQueryInput {
 }
 
 export interface BuiltAnalyticsQuery {
+	endMs: number;
 	meta: {
 		range: TimeRange;
 		bucket: string;
@@ -67,6 +68,7 @@ export function buildAnalyticsQuery(
 	const config = ANALYTICS_RANGE_CONFIG[input.range];
 
 	return {
+		endMs: now,
 		meta: {
 			range: input.range,
 			bucket: config.bucketLabel,

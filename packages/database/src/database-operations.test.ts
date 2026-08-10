@@ -5,14 +5,75 @@ import { join } from "node:path";
 import { DatabaseOperations } from "./database-operations";
 
 const tempDirs: string[] = [];
+const originalPayloadBudget = process.env.CF_PAYLOAD_STORE_BUDGET_BYTES;
 
 afterEach(() => {
 	while (tempDirs.length > 0) {
 		rmSync(tempDirs.pop() as string, { force: true, recursive: true });
 	}
+	if (originalPayloadBudget === undefined) {
+		delete process.env.CF_PAYLOAD_STORE_BUDGET_BYTES;
+	} else {
+		process.env.CF_PAYLOAD_STORE_BUDGET_BYTES = originalPayloadBudget;
+	}
 });
 
 describe("DatabaseOperations", () => {
+	it("keeps metadata persistence available when payload storage cannot initialize", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "ccflare-db-ops-"));
+		tempDirs.push(tempDir);
+		process.env.CF_PAYLOAD_STORE_BUDGET_BYTES = "invalid";
+		const dbOps = new DatabaseOperations(join(tempDir, "ccflare.db"));
+
+		try {
+			dbOps.saveRequest(
+				"request-without-payload-store",
+				"POST",
+				"/v1/openai/responses",
+				"openai",
+				"/responses",
+				null,
+				200,
+				true,
+				null,
+				10,
+				0,
+				undefined,
+				{ payload: { raw: "must not fall back into SQLite" } },
+			);
+
+			expect(dbOps.getRecentRequests(1)[0]?.id).toBe(
+				"request-without-payload-store",
+			);
+			expect(
+				dbOps.getRequestPayload("request-without-payload-store"),
+			).toBeNull();
+			expect(dbOps.getPayloadStoreSnapshot()).toMatchObject({
+				writable: false,
+				lastError: "storage_failed",
+			});
+		} finally {
+			dbOps.close();
+		}
+	});
+
+	it("keeps health reporting available when payload storage disappears", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "ccflare-db-ops-"));
+		tempDirs.push(tempDir);
+		const dbOps = new DatabaseOperations(join(tempDir, "ccflare.db"));
+
+		try {
+			rmSync(join(tempDir, "payloads"), { force: true, recursive: true });
+
+			expect(dbOps.getPayloadStoreSnapshot()).toMatchObject({
+				writable: false,
+				lastError: "storage_failed",
+			});
+		} finally {
+			dbOps.close();
+		}
+	});
+
 	it("enables foreign key enforcement during initialization", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "ccflare-db-ops-"));
 		tempDirs.push(tempDir);

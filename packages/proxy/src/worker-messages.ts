@@ -24,6 +24,9 @@ export interface StartMessage {
 	// Request details
 	requestHeaders: Record<string, string>;
 	requestBody: string | null; // base64 encoded
+	captureRawPayload: boolean;
+	rawPayloadMaxBytes: number;
+	requestBodyTruncated: boolean;
 
 	// Response details
 	responseStatus: number;
@@ -43,6 +46,7 @@ export interface ChunkMessage {
 	messageId?: string;
 	requestId: string;
 	data: Uint8Array;
+	dataTruncated?: boolean;
 }
 
 export interface PreExtractedUsage {
@@ -61,6 +65,7 @@ export interface EndMessage {
 	messageId?: string;
 	requestId: string;
 	responseBody?: string | null; // base64 encoded, for non-streaming
+	responseBodyTruncated?: boolean;
 	preExtractedUsage?: PreExtractedUsage;
 	preExtractedModel?: string;
 	success: boolean;
@@ -105,9 +110,18 @@ export interface PayloadMessage {
 	payload: import("@ccflare/types").RequestPayload;
 }
 
+export interface WorkerHealthMessage {
+	type: "worker-health";
+	delta: {
+		usageFacts?: number;
+		payloadPersistenceFailures?: number;
+	};
+}
+
 export type OutgoingWorkerMessage =
 	| SummaryMessage
 	| PayloadMessage
+	| WorkerHealthMessage
 	| ReadyMessage
 	| AckMessage
 	| ShutdownCompleteMessage;

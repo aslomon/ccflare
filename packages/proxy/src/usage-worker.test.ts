@@ -6,10 +6,13 @@ import {
 } from "./usage-worker";
 import type {
 	AckMessage,
+	ChunkMessage,
+	EndMessage,
 	ReadyMessage,
 	ShutdownCompleteMessage,
 	StartMessage,
 	SummaryMessage,
+	WorkerHealthMessage,
 } from "./worker-messages";
 
 function createStartMessage(): StartMessage {
@@ -23,6 +26,9 @@ function createStartMessage(): StartMessage {
 		timestamp: Date.now(),
 		requestHeaders: {},
 		requestBody: null,
+		captureRawPayload: false,
+		rawPayloadMaxBytes: 256 * 1024,
+		requestBodyTruncated: false,
 		responseStatus: 200,
 		responseHeaders: {
 			"content-type": "application/json",
@@ -31,6 +37,22 @@ function createStartMessage(): StartMessage {
 		providerName: "openai",
 		retryAttempt: 0,
 		failoverAttempts: 0,
+	};
+}
+
+function createChunkMessage(requestId: string, value: number): ChunkMessage {
+	return {
+		type: "chunk",
+		requestId,
+		data: new Uint8Array([value]),
+	};
+}
+
+function createEndMessage(requestId: string): EndMessage {
+	return {
+		type: "end",
+		requestId,
+		success: true,
 	};
 }
 
@@ -93,7 +115,8 @@ class FakeWorker implements WorkerLike {
 			| ReadyMessage
 			| AckMessage
 			| ShutdownCompleteMessage
-			| SummaryMessage,
+			| SummaryMessage
+			| WorkerHealthMessage,
 	): void {
 		this.onmessage?.({ data: message } as MessageEvent<unknown>);
 	}
@@ -124,6 +147,102 @@ afterEach(async () => {
 });
 
 describe("UsageWorkerController", () => {
+	it("surfaces worker-side usage and payload persistence degradation", () => {
+		const workers: FakeWorker[] = [];
+		const controller = new UsageWorkerController({
+			createWorker() {
+				const worker = new FakeWorker();
+				workers.push(worker);
+				return worker;
+			},
+			readyTimeoutMs: 10_000,
+			ackTimeoutMs: 10_000,
+			shutdownDelayMs: 0,
+			logger: new TestLogger(),
+		});
+		controllers.push(controller);
+
+		workers[0]?.emitMessage({ type: "ready" });
+		workers[0]?.emitMessage({
+			type: "worker-health",
+			delta: { usageFacts: 2, payloadPersistenceFailures: 1 },
+		});
+
+		expect(controller.getHealthSnapshot()).toMatchObject({
+			degradedSince: expect.any(String),
+			droppedMessages: { usageFacts: 2 },
+			payloadPersistenceFailures: 1,
+		});
+	});
+
+	it("hard-caps a paused queue and evicts chunks before request facts", () => {
+		const workers: FakeWorker[] = [];
+		const controller = new UsageWorkerController({
+			createWorker() {
+				const worker = new FakeWorker();
+				workers.push(worker);
+				return worker;
+			},
+			maxQueuedMessages: 3,
+			readyTimeoutMs: 10_000,
+			ackTimeoutMs: 10_000,
+			shutdownDelayMs: 0,
+			logger: new TestLogger(),
+		});
+		controllers.push(controller);
+
+		controller.postMessage(createStartMessage());
+		controller.postMessage(createChunkMessage("req-1", 1));
+		controller.postMessage(createChunkMessage("req-1", 2));
+		controller.postMessage(createEndMessage("req-1"));
+
+		const health = controller.getHealthSnapshot();
+		expect(health.queuedMessages).toBe(3);
+		expect(health.droppedMessages.queuedChunks).toBe(1);
+		expect(health.degradedSince).toBeString();
+
+		workers[0]?.emitMessage({ type: "ready" });
+		expect(workers[0]?.postedMessages).toHaveLength(3);
+		expect(workers[0]?.postedMessages).toEqual([
+			expect.objectContaining({ type: "start" }),
+			expect.objectContaining({ type: "chunk", data: new Uint8Array([2]) }),
+			expect.objectContaining({ type: "end" }),
+		]);
+	});
+
+	it("replays pending start and end facts after restart but drops chunks", async () => {
+		const workers: FakeWorker[] = [];
+		const controller = new UsageWorkerController({
+			createWorker() {
+				const worker = new FakeWorker();
+				workers.push(worker);
+				return worker;
+			},
+			readyTimeoutMs: 10_000,
+			ackTimeoutMs: 10_000,
+			shutdownDelayMs: 0,
+			logger: new TestLogger(),
+		});
+		controllers.push(controller);
+
+		workers[0]?.emitMessage({ type: "ready" });
+		controller.postMessage(createStartMessage());
+		controller.postMessage(createChunkMessage("req-1", 1));
+		controller.postMessage(createEndMessage("req-1"));
+		workers[0]?.emitError("crash before ack");
+
+		await waitFor(() => workers.length === 2);
+		workers[1]?.emitMessage({ type: "ready" });
+
+		expect(workers[1]?.postedMessages).toEqual([
+			expect.objectContaining({ type: "start", requestId: "req-1" }),
+			expect.objectContaining({ type: "end", requestId: "req-1" }),
+		]);
+		expect(controller.getHealthSnapshot().droppedMessages.replayedChunks).toBe(
+			1,
+		);
+	});
+
 	it("resolves an explicit usage worker path from the environment", () => {
 		process.env.CF_USAGE_WORKER_PATH = "/tmp/post-processor.worker.js";
 

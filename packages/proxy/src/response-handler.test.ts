@@ -2,9 +2,13 @@ import { describe, expect, it } from "bun:test";
 import type { Account } from "@ccflare/types";
 import { waitForProxyBackgroundTasks } from "./background-tasks";
 import type { ResolvedProxyContext } from "./handlers";
+import type { RawPayloadCapturePolicy } from "./payload-capture";
 import { forwardToClient } from "./response-handler";
 
-function createResolvedProxyContext(messages: unknown[]): ResolvedProxyContext {
+function createResolvedProxyContext(
+	messages: unknown[],
+	isStreamingResponse = false,
+): ResolvedProxyContext {
 	return {
 		provider: {
 			name: "openai",
@@ -25,7 +29,7 @@ function createResolvedProxyContext(messages: unknown[]): ResolvedProxyContext {
 				return null;
 			},
 			isStreamingResponse() {
-				return false;
+				return isStreamingResponse;
 			},
 		},
 		providerName: "openai",
@@ -61,6 +65,99 @@ function createResolvedProxyContext(messages: unknown[]): ResolvedProxyContext {
 }
 
 describe("forwardToClient", () => {
+	it("caps request and non-streaming response bodies before base64 encoding", async () => {
+		const messages: Array<Record<string, unknown>> = [];
+		const policy: RawPayloadCapturePolicy = {
+			enabled: true,
+			maxBytesPerBody: 4,
+		};
+		await forwardToClient(
+			{
+				requestId: "req-capped",
+				method: "POST",
+				path: "/v1/openai/responses",
+				account: null,
+				requestHeaders: new Headers(),
+				requestBody: new Uint8Array([1, 2, 3, 4, 5, 6]).buffer,
+				response: new Response(new Uint8Array([7, 8, 9, 10, 11, 12])),
+				timestamp: Date.now(),
+				retryAttempt: 0,
+				failoverAttempts: 0,
+				rawPayloadPolicy: policy,
+			},
+			createResolvedProxyContext(messages),
+		);
+		await waitForProxyBackgroundTasks();
+
+		const start = messages.find((message) => message.type === "start");
+		const end = messages.find((message) => message.type === "end");
+		expect(start).toMatchObject({
+			captureRawPayload: true,
+			requestBodyTruncated: true,
+		});
+		expect(Buffer.from(String(start?.requestBody), "base64")).toEqual(
+			Buffer.from([1, 2, 3, 4]),
+		);
+		expect(end).toMatchObject({ responseBodyTruncated: true });
+		expect(Buffer.from(String(end?.responseBody), "base64")).toEqual(
+			Buffer.from([7, 8, 9, 10]),
+		);
+	});
+
+	it("marks raw persistence disabled while usage processing continues", async () => {
+		const messages: Array<Record<string, unknown>> = [];
+		await forwardToClient(
+			{
+				requestId: "req-default-off",
+				method: "POST",
+				path: "/v1/openai/responses",
+				account: null,
+				requestHeaders: new Headers(),
+				requestBody: new TextEncoder().encode('{"model":"gpt-5"}').buffer,
+				response: new Response('{"usage":{"total_tokens":2}}'),
+				timestamp: Date.now(),
+				retryAttempt: 0,
+				failoverAttempts: 0,
+				rawPayloadPolicy: { enabled: false, maxBytesPerBody: 1024 },
+			},
+			createResolvedProxyContext(messages),
+		);
+		await waitForProxyBackgroundTasks();
+
+		expect(messages.find((message) => message.type === "start")).toMatchObject({
+			captureRawPayload: false,
+			requestBody: expect.any(String),
+		});
+		expect(messages.find((message) => message.type === "end")).toMatchObject({
+			responseBody: expect.any(String),
+		});
+	});
+
+	it("caps each stream chunk before posting it to the worker", async () => {
+		const messages: Array<Record<string, unknown>> = [];
+		await forwardToClient(
+			{
+				requestId: "req-stream",
+				method: "POST",
+				path: "/v1/openai/responses",
+				account: null,
+				requestHeaders: new Headers(),
+				requestBody: null,
+				response: new Response(new Uint8Array([1, 2, 3, 4, 5, 6])),
+				timestamp: Date.now(),
+				retryAttempt: 0,
+				failoverAttempts: 0,
+				rawPayloadPolicy: { enabled: true, maxBytesPerBody: 4 },
+			},
+			createResolvedProxyContext(messages, true),
+		);
+		await waitForProxyBackgroundTasks();
+
+		const chunk = messages.find((message) => message.type === "chunk");
+		expect(chunk).toMatchObject({ dataTruncated: true });
+		expect(chunk?.data).toEqual(new Uint8Array([1, 2, 3, 4]));
+	});
+
 	it("passes explicit pre-extracted models through to the worker end message", async () => {
 		const messages: unknown[] = [];
 		const response = await forwardToClient(

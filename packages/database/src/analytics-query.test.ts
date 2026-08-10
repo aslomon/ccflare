@@ -83,6 +83,7 @@ describe("buildAnalyticsQuery", () => {
 				includeModelBreakdown: true,
 			}),
 		).toEqual({
+			endMs: 1_000_000,
 			meta: {
 				range: "24h",
 				bucket: "1h",

@@ -39,6 +39,7 @@ afterEach(async () => {
 
 	delete process.env.ccflare_DB_PATH;
 	delete process.env.ccflare_CONFIG_PATH;
+	delete process.env.CF_RAW_PAYLOAD_CAPTURE;
 });
 
 function createLargeResponseCompletedMessage(sizeBytes: number): string {
@@ -116,6 +117,7 @@ describe("WebSocket request logging integration", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "ccflare-websocket-logging-"));
 		process.env.ccflare_DB_PATH = join(tempDir, "ccflare.db");
 		process.env.ccflare_CONFIG_PATH = join(tempDir, "ccflare.json");
+		process.env.CF_RAW_PAYLOAD_CAPTURE = "1";
 		DatabaseFactory.initialize();
 		globalThis.WebSocket =
 			FakeUpstreamWebSocket as unknown as typeof globalThis.WebSocket;
@@ -375,7 +377,7 @@ describe("WebSocket request logging integration", () => {
 			totalTokens: 9,
 			inputTokens: 7,
 			outputTokens: 2,
-			costUsd: 0,
+			costUsd: null,
 		});
 	});
 

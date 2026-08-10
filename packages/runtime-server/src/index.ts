@@ -12,6 +12,10 @@ import { serve } from "bun";
 import { bootstrapRuntime, logInitialAccountStatus } from "./bootstrap-runtime";
 import { loadDashboardAssets, resetDashboardAssets } from "./dashboard-assets";
 import { createServerFetchHandler } from "./fetch-handler";
+import {
+	resolveServerBinding,
+	type ServerBindingOptions,
+} from "./server-binding";
 import { createStartupBanner } from "./startup-banner";
 import { runStartupMaintenance } from "./startup-maintenance";
 
@@ -30,8 +34,7 @@ export interface ServerHandle {
 	stop: () => Promise<void>;
 }
 
-export interface StartServerOptions {
-	port?: number;
+export interface StartServerOptions extends ServerBindingOptions {
 	withDashboard?: boolean;
 }
 
@@ -128,14 +131,15 @@ export default function startServer(
 		};
 	}
 
-	const { port = NETWORK.DEFAULT_PORT, withDashboard = true } = options || {};
+	const { withDashboard = true } = options ?? {};
+	const binding = resolveServerBinding(options);
 
 	if (withDashboard) {
 		loadDashboardAssets();
 	}
 
 	const { config, dbOps, log, apiRouter, proxyContext, runtimeConfig } =
-		bootstrapRuntime(port, serverLog);
+		bootstrapRuntime(binding.port, serverLog);
 
 	stopRetentionJob = runStartupMaintenance(config, dbOps);
 
@@ -147,6 +151,7 @@ export default function startServer(
 
 	// Main server
 	serverInstance = serve({
+		hostname: binding.hostname,
 		port: runtimeConfig.port,
 		idleTimeout: NETWORK.IDLE_TIMEOUT_MAX, // Max allowed by Bun
 		fetch(req, server) {

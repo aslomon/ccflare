@@ -1,6 +1,7 @@
 import type { Config } from "@ccflare/config";
 import {
 	NETWORK,
+	RETENTION_DAYS,
 	TIME_CONSTANTS,
 	ValidationError,
 	validateNumber,
@@ -110,8 +111,8 @@ export function createConfigHandlers(config: Config) {
 				}
 				if (body.requestDays !== undefined) {
 					const requestDays = validateNumber(body.requestDays, "requestDays", {
-						min: 1,
-						max: 3650,
+						min: RETENTION_DAYS.REQUEST_MIN,
+						max: RETENTION_DAYS.REQUEST_MAX,
 						integer: true,
 					});
 					if (typeof requestDays !== "number") {

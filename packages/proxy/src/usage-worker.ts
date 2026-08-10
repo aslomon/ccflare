@@ -9,6 +9,7 @@ import type {
 	OutgoingWorkerMessage,
 	ReadyMessage,
 	ShutdownCompleteMessage,
+	WorkerHealthMessage,
 } from "./worker-messages";
 
 export interface UsageWorkerTransport {
@@ -36,6 +37,15 @@ export interface UsageWorkerHealthSnapshot {
 	queuedMessages: number;
 	pendingAcks: number;
 	lastError: string | null;
+	degradedSince: string | null;
+	droppedMessages: {
+		queuedChunks: number;
+		replayedChunks: number;
+		factMessages: number;
+		shutdownMessages: number;
+		usageFacts: number;
+	};
+	payloadPersistenceFailures: number;
 }
 
 interface UsageWorkerControllerOptions {
@@ -44,6 +54,7 @@ interface UsageWorkerControllerOptions {
 	readyTimeoutMs?: number;
 	ackTimeoutMs?: number;
 	shutdownDelayMs?: number;
+	maxQueuedMessages?: number;
 	logger?: UsageWorkerLogger;
 }
 
@@ -65,6 +76,7 @@ const DEFAULT_ACK_TIMEOUT_MS = Number(
 		TIME_CONSTANTS.RETRY_DELAY_DEFAULT * 5,
 );
 const DEFAULT_SHUTDOWN_DELAY_MS = 100;
+const DEFAULT_MAX_QUEUED_MESSAGES = 2048;
 
 function noop(): void {}
 
@@ -140,12 +152,26 @@ function isShutdownCompleteMessage(
 	);
 }
 
+function isWorkerHealthMessage(value: unknown): value is WorkerHealthMessage {
+	if (!isRecord(value) || value.type !== "worker-health") return false;
+	if (!isRecord(value.delta)) return false;
+	const usageFacts = value.delta.usageFacts;
+	const persistenceFailures = value.delta.payloadPersistenceFailures;
+	return (
+		(usageFacts === undefined ||
+			(typeof usageFacts === "number" && usageFacts >= 0)) &&
+		(persistenceFailures === undefined ||
+			(typeof persistenceFailures === "number" && persistenceFailures >= 0))
+	);
+}
+
 export class UsageWorkerController implements UsageWorkerTransport {
 	private readonly createWorkerImpl: () => WorkerLike;
 	private readonly onWorkerMessage?: (message: OutgoingWorkerMessage) => void;
 	private readonly readyTimeoutMs: number;
 	private readonly ackTimeoutMs: number;
 	private readonly shutdownDelayMs: number;
+	private readonly maxQueuedMessages: number;
 	private readonly logger: UsageWorkerLogger;
 	private worker: WorkerLike | null = null;
 	private ready = false;
@@ -159,6 +185,15 @@ export class UsageWorkerController implements UsageWorkerTransport {
 	private resolveShutdown: (() => void) | null = null;
 	private rejectShutdown: ((error: Error) => void) | null = null;
 	private lastError: string | null = null;
+	private degradedSince: string | null = null;
+	private readonly droppedMessages = {
+		queuedChunks: 0,
+		replayedChunks: 0,
+		factMessages: 0,
+		shutdownMessages: 0,
+		usageFacts: 0,
+	};
+	private payloadPersistenceFailures = 0;
 
 	constructor(options: UsageWorkerControllerOptions = {}) {
 		this.createWorkerImpl = options.createWorker ?? createDefaultWorker;
@@ -166,6 +201,8 @@ export class UsageWorkerController implements UsageWorkerTransport {
 		this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 		this.ackTimeoutMs = options.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
 		this.shutdownDelayMs = options.shutdownDelayMs ?? DEFAULT_SHUTDOWN_DELAY_MS;
+		this.maxQueuedMessages =
+			options.maxQueuedMessages ?? DEFAULT_MAX_QUEUED_MESSAGES;
 		this.logger = options.logger ?? createDefaultLogger();
 		this.startWorker();
 	}
@@ -174,6 +211,9 @@ export class UsageWorkerController implements UsageWorkerTransport {
 		if (this.shuttingDown) {
 			this.logger.warn(
 				"Dropping usage worker message because the worker is shutting down",
+			);
+			this.recordDrop(
+				message.type === "chunk" ? "queuedChunks" : "shutdownMessages",
 			);
 			return;
 		}
@@ -184,7 +224,7 @@ export class UsageWorkerController implements UsageWorkerTransport {
 		};
 
 		if (!this.ready || !this.worker) {
-			this.queuedMessages.push(decoratedMessage);
+			this.enqueueMessage(decoratedMessage);
 			return;
 		}
 
@@ -209,7 +249,49 @@ export class UsageWorkerController implements UsageWorkerTransport {
 			queuedMessages: this.queuedMessages.length,
 			pendingAcks: this.pendingAcks.size,
 			lastError: this.lastError,
+			degradedSince: this.degradedSince,
+			droppedMessages: { ...this.droppedMessages },
+			payloadPersistenceFailures: this.payloadPersistenceFailures,
 		};
+	}
+
+	private recordDrop(kind: keyof typeof this.droppedMessages): void {
+		this.droppedMessages[kind] += 1;
+		this.degradedSince ??= new Date().toISOString();
+	}
+
+	private applyWorkerHealth(message: WorkerHealthMessage): void {
+		const usageFacts = message.delta.usageFacts ?? 0;
+		const persistenceFailures = message.delta.payloadPersistenceFailures ?? 0;
+		this.droppedMessages.usageFacts += usageFacts;
+		this.payloadPersistenceFailures += persistenceFailures;
+		if (usageFacts > 0 || persistenceFailures > 0) {
+			this.degradedSince ??= new Date().toISOString();
+		}
+	}
+
+	private enqueueMessage(message: DecoratedIncomingWorkerMessage): void {
+		if (this.queuedMessages.length < this.maxQueuedMessages) {
+			this.queuedMessages.push(message);
+			return;
+		}
+
+		if (message.type === "chunk") {
+			this.recordDrop("queuedChunks");
+			return;
+		}
+
+		const chunkIndex = this.queuedMessages.findIndex(
+			(queuedMessage) => queuedMessage.type === "chunk",
+		);
+		if (chunkIndex >= 0) {
+			this.queuedMessages.splice(chunkIndex, 1);
+			this.recordDrop("queuedChunks");
+			this.queuedMessages.push(message);
+			return;
+		}
+
+		this.recordDrop("factMessages");
 	}
 
 	terminateGracefully(): Promise<void> {
@@ -377,6 +459,21 @@ export class UsageWorkerController implements UsageWorkerTransport {
 		this.pendingAcks.clear();
 	}
 
+	private replayPendingMessages(): void {
+		const messages = Array.from(this.pendingAcks.values()).map(
+			(pending) => pending.message,
+		);
+		this.clearPendingAcks();
+
+		for (const message of messages) {
+			if (message.type === "chunk") {
+				this.recordDrop("replayedChunks");
+				continue;
+			}
+			this.enqueueMessage(message);
+		}
+	}
+
 	private handleWorkerMessage(message: unknown): void {
 		if (isShutdownCompleteMessage(message)) {
 			this.lastError = message.asyncWriter.healthy
@@ -396,6 +493,11 @@ export class UsageWorkerController implements UsageWorkerTransport {
 		}
 
 		if (this.shuttingDown) {
+			return;
+		}
+
+		if (isWorkerHealthMessage(message)) {
+			this.applyWorkerHealth(message);
 			return;
 		}
 
@@ -437,7 +539,7 @@ export class UsageWorkerController implements UsageWorkerTransport {
 
 	private sendMessage(message: DecoratedIncomingWorkerMessage): void {
 		if (!this.worker) {
-			this.queuedMessages.push(message);
+			this.enqueueMessage(message);
 			return;
 		}
 
@@ -445,6 +547,7 @@ export class UsageWorkerController implements UsageWorkerTransport {
 			this.worker.postMessage(message);
 		} catch (error) {
 			this.logger.error("Failed to post a message to the usage worker", error);
+			this.enqueueMessage(message);
 			this.restartWorker();
 			return;
 		}
@@ -459,7 +562,6 @@ export class UsageWorkerController implements UsageWorkerTransport {
 				return;
 			}
 
-			this.pendingAcks.delete(message.messageId);
 			this.logger.warn(
 				"Usage worker became unresponsive while waiting for an acknowledgement; restarting it",
 			);
@@ -502,7 +604,7 @@ export class UsageWorkerController implements UsageWorkerTransport {
 			);
 		}
 
-		this.clearPendingAcks();
+		this.replayPendingMessages();
 		this.ready = false;
 
 		const worker = this.worker;

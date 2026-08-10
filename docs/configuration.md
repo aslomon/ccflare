@@ -103,7 +103,7 @@ The configuration file is stored at:
 | `SESSION_DURATION_MS` | `session_duration_ms` | number | `SESSION_DURATION_MS=3600000` |
 | `PORT` | `port` | number | `PORT=3000` |
 | `DATA_RETENTION_DAYS` | `data_retention_days` | number | `DATA_RETENTION_DAYS=7` (payloads) |
-| `REQUEST_RETENTION_DAYS` | `request_retention_days` | number | `REQUEST_RETENTION_DAYS=365` (metadata) |
+| `REQUEST_RETENTION_DAYS` | `request_retention_days` | number | `REQUEST_RETENTION_DAYS=365` (metadata, minimum 7 days) |
 | `ccflare_CONFIG_PATH` | - | string | `ccflare_CONFIG_PATH=/etc/ccflare.json` |
 
 ### Additional Environment Variables
@@ -119,6 +119,13 @@ These environment variables are not stored in the configuration file and must be
 | `CF_PRICING_REFRESH_HOURS` | Hours between pricing data refreshes | `24` | `CF_PRICING_REFRESH_HOURS=12` |
 | `CF_STREAM_USAGE_BUFFER_KB` | Stream usage buffer size in KB | `64` | `CF_STREAM_USAGE_BUFFER_KB=128` |
 | `CF_STREAM_TIMEOUT_MS` | Stream processing timeout in milliseconds | `60000` (1 minute) | `CF_STREAM_TIMEOUT_MS=120000` |
+| `CF_RAW_PAYLOAD_CAPTURE` | Persist bounded raw request and response payloads (`0` or `1`) | `0` | `CF_RAW_PAYLOAD_CAPTURE=1` |
+| `CF_RAW_PAYLOAD_MAX_BYTES` | Maximum captured bytes per body (hard maximum 1 MiB) | `262144` | `CF_RAW_PAYLOAD_MAX_BYTES=1048576` |
+| `CF_PAYLOAD_STORE_BUDGET_BYTES` | Compressed payload store high-water limit | `536870912` | `CF_PAYLOAD_STORE_BUDGET_BYTES=536870912` |
+| `CF_PAYLOAD_STORE_TARGET_BYTES` | Low-water target after pruning | `402653184` | `CF_PAYLOAD_STORE_TARGET_BYTES=402653184` |
+| `CF_PAYLOAD_STORE_DATABASE_HARD_LIMIT_BYTES` | Disable payload writes at this physical SQLite size | `1073741824` | `CF_PAYLOAD_STORE_DATABASE_HARD_LIMIT_BYTES=1073741824` |
+| `CF_PAYLOAD_STORE_MAX_RAW_BYTES` | Maximum serialized payload size before compression | `1048576` | `CF_PAYLOAD_STORE_MAX_RAW_BYTES=1048576` |
+| `CF_PAYLOAD_STORE_MIN_FREE_BYTES` | Minimum free disk space required for payload writes | `67108864` | `CF_PAYLOAD_STORE_MIN_FREE_BYTES=67108864` |
 
 ## Runtime Configuration API
 
