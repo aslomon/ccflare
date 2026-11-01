@@ -75,7 +75,11 @@ class PriceCatalogue {
 	}
 
 	private getCacheDir(): string {
-		return join(tmpdir(), "ccflare");
+		const namespace =
+			process.env.NODE_ENV === "test"
+				? `ccflare-test-${process.pid}`
+				: "ccflare";
+		return join(tmpdir(), namespace);
 	}
 
 	private getCachePath(): string {

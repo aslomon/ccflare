@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	estimateCostResult,
 	estimateCostUSD,
@@ -53,6 +55,15 @@ afterEach(() => {
 });
 
 describe("estimateCostResult", () => {
+	it("stores mocked catalogues in a separate test-process cache", async () => {
+		mockCatalogue(validCatalogue());
+		await estimateCostResult("gpt-4o", { inputTokens: 1 });
+		const cache = Bun.file(
+			join(tmpdir(), `ccflare-test-${process.pid}`, "api-pricing.json"),
+		);
+		expect(await cache.exists()).toBe(true);
+	});
+
 	it("returns an estimated models.dev cost for a validated model", async () => {
 		mockCatalogue(validCatalogue());
 

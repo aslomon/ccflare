@@ -145,7 +145,10 @@ async function quote(
 		return { costUsd: 0, status: "estimated", source: "local" };
 	if (!row.model || row.model === "unknown")
 		return { costUsd: null, status: "unavailable", source: "none" };
-	return estimate(row.model, row);
+	const result = await estimate(row.model, row);
+	if (result.costUsd === null && row.oldCost !== null)
+		throw new Error(`Current API price unavailable for ${row.model}`);
+	return result;
 }
 
 export async function prepareRepricingPlan(

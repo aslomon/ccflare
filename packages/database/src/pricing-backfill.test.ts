@@ -42,6 +42,19 @@ test("applies prices while preserving the recorded tokens", async () => {
 	).toEqual({ cost_usd: 0.25, input_tokens: 10, output_tokens: 2 });
 });
 
+test("refuses to erase a recorded price when the current catalogue is unavailable", async () => {
+	insert("known", "claude-opus-5-5", 5);
+	const result = await prepareRepricingPlan(db, 200, async () => ({
+		costUsd: null,
+		status: "unavailable",
+		source: "none",
+	}));
+	expect(result.error).toContain("Current API price unavailable");
+	expect(db.query("SELECT cost_usd FROM requests").get()).toEqual({
+		cost_usd: 5,
+	});
+});
+
 test("does not overwrite usage that changed after the preview", async () => {
 	insert("known", "claude-opus-5-5", 5);
 	const result = await prepareRepricingPlan(db, 200, estimate);
