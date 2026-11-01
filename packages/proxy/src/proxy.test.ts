@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
-import { requestEvents } from "@ccflare/core";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { budgetPolicySchema, requestEvents } from "@ccflare/core";
+import { BudgetRepository, DatabaseOperations } from "@ccflare/database";
 import { type Provider, ProviderRegistry } from "@ccflare/providers";
 import type { Account } from "@ccflare/types";
+import { BudgetControl } from "./budget/control";
+import { handleCompatibilityProxy } from "./compat/handler";
 import { handleProxy, type ProxyContext } from "./proxy";
 
 const originalFetch = globalThis.fetch;
@@ -71,6 +74,65 @@ afterEach(() => {
 });
 
 describe("handleProxy routing", () => {
+	it("blocks quota-managed native and compatibility requests without credential passthrough", async () => {
+		const context = createProxyContext([
+			createTestProvider("claude-code"),
+			createTestProvider("anthropic"),
+		]);
+		const db = new DatabaseOperations(":memory:");
+		context.dbOps = db;
+		const account = db.createOAuthAccount({
+			name: "test",
+			provider: "claude-code",
+			accessToken: "test",
+			refreshToken: "test",
+		});
+		const budgets = new BudgetControl(
+			db,
+			new BudgetRepository(db.getDatabase()),
+			budgetPolicySchema.parse({ enabled: true }),
+		);
+		context.budgets = budgets;
+		const fakeFetch = Object.assign(async () => new Response("{}"), {
+			preconnect: globalThis.fetch.preconnect,
+		});
+		const fetcher = spyOn(globalThis, "fetch").mockImplementation(fakeFetch);
+		const native = new Request("http://local/v1/claude-code/v1/messages", {
+			method: "POST",
+			body: JSON.stringify({ model: "claude-sonnet", max_tokens: 10 }),
+			headers: { Authorization: "Bearer passthrough" },
+		});
+		expect(
+			(await handleProxy(native, new URL(native.url), context)).status,
+		).toBe(503);
+		budgets.observe(account, {
+			source: "claude-oauth",
+			observedAt: Date.now(),
+			windows: [
+				{
+					key: "seven_day",
+					usedPercent: 85,
+					resetAt: Date.now() + 86_400_000,
+					model: null,
+				},
+			],
+		});
+		const compat = new Request("http://local/v1/ccflare/anthropic/messages", {
+			method: "POST",
+			body: JSON.stringify({
+				model: "anthropic/claude-sonnet",
+				max_tokens: 10,
+				messages: [],
+			}),
+		});
+		expect(
+			(await handleCompatibilityProxy(compat, new URL(compat.url), context))
+				?.status,
+		).toBe(503);
+		expect(fetcher).not.toHaveBeenCalled();
+		fetcher.mockRestore();
+		db.close();
+	});
 	it("returns 404 for an unknown provider", async () => {
 		const response = await handleProxy(
 			new Request("http://localhost:8080/v1/google/v1/chat", {
@@ -145,4 +207,18 @@ describe("handleProxy routing", () => {
 
 		expect(response.status).toBe(200);
 	});
+});
+
+it("never falls through to unauthenticated LM Studio when its account is paused or missing", async () => {
+	const ctx = createProxyContext([createTestProvider("lmstudio")]);
+	const response = await handleProxy(
+		new Request("http://localhost/v1/lmstudio/v1/messages", {
+			method: "POST",
+			body: JSON.stringify({ model: "qwen/test" }),
+		}),
+		new URL("http://localhost/v1/lmstudio/v1/messages"),
+		ctx,
+	);
+	expect(response.status).toBe(503);
+	await response.text();
 });

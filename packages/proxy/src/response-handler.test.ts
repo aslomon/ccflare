@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { CodexProvider } from "@ccflare/providers";
 import type { Account } from "@ccflare/types";
 import { waitForProxyBackgroundTasks } from "./background-tasks";
 import type { ResolvedProxyContext } from "./handlers";
@@ -65,6 +66,38 @@ function createResolvedProxyContext(
 }
 
 describe("forwardToClient", () => {
+	it("processes headerless Codex Responses SSE while raw retention is disabled", async () => {
+		const messages: Array<Record<string, unknown>> = [];
+		const context = createResolvedProxyContext(messages);
+		context.provider = new CodexProvider();
+		context.providerName = "codex";
+		const stream =
+			'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-example-luna","usage":{"input_tokens":19,"output_tokens":7,"total_tokens":26}}}\n\n';
+		await forwardToClient(
+			{
+				requestId: "req-codex-sse",
+				method: "POST",
+				path: "/v1/codex/responses",
+				account: null,
+				requestHeaders: new Headers(),
+				requestBody: null,
+				response: new Response(new TextEncoder().encode(stream)),
+				timestamp: Date.now(),
+				retryAttempt: 0,
+				failoverAttempts: 0,
+				rawPayloadPolicy: { enabled: false, maxBytesPerBody: 1024 },
+			},
+			context,
+		);
+		await waitForProxyBackgroundTasks();
+		expect(messages.find((message) => message.type === "start")).toMatchObject({
+			isStream: true,
+			captureRawPayload: false,
+		});
+		expect(messages.find((message) => message.type === "chunk")?.data).toEqual(
+			new TextEncoder().encode(stream),
+		);
+	});
 	it("caps request and non-streaming response bodies before base64 encoding", async () => {
 		const messages: Array<Record<string, unknown>> = [];
 		const policy: RawPayloadCapturePolicy = {

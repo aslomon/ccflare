@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { estimateCostUSD, requestEvents } from "@ccflare/core";
+import { requestEvents } from "@ccflare/core";
 import { DatabaseFactory } from "@ccflare/database";
 import { CodexProvider, ProviderRegistry } from "@ccflare/providers";
 import {
@@ -14,6 +14,7 @@ import {
 	websocketProxyHandler,
 } from "@ccflare/proxy";
 import type { Account, Request, RequestStreamEvent } from "@ccflare/types";
+import { installPricingFixture } from "./test-helpers/pricing";
 import {
 	createCodexAccount,
 	decodeMessageData,
@@ -25,9 +26,28 @@ import {
 } from "./test-helpers/websocket";
 
 let tempDir: string | null = null;
+let pricingDirectory: string | undefined;
+let originalTemporaryDirectory: string | undefined;
+let restorePricing: (() => void) | undefined;
+let originalWorkerPath: string | undefined;
+
+beforeEach(() => {
+	originalTemporaryDirectory = process.env.TMPDIR;
+	pricingDirectory = mkdtempSync(join(tmpdir(), "ccflare-ws-pricing-"));
+	process.env.TMPDIR = pricingDirectory;
+	originalWorkerPath = process.env.CF_USAGE_WORKER_PATH;
+	process.env.CF_USAGE_WORKER_PATH = new URL(
+		"./test-helpers/pricing-worker.fixture.ts",
+		import.meta.url,
+	).href;
+	restorePricing = installPricingFixture();
+});
 
 afterEach(async () => {
 	await terminateUsageWorker();
+	restorePricing?.();
+	if (originalWorkerPath === undefined) delete process.env.CF_USAGE_WORKER_PATH;
+	else process.env.CF_USAGE_WORKER_PATH = originalWorkerPath;
 	globalThis.WebSocket = OriginalWebSocket;
 	FakeUpstreamWebSocket.reset();
 	DatabaseFactory.reset();
@@ -36,6 +56,12 @@ afterEach(async () => {
 		rmSync(tempDir, { force: true, recursive: true });
 		tempDir = null;
 	}
+	if (pricingDirectory) {
+		rmSync(pricingDirectory, { force: true, recursive: true });
+		pricingDirectory = undefined;
+	}
+	if (originalTemporaryDirectory === undefined) delete process.env.TMPDIR;
+	else process.env.TMPDIR = originalTemporaryDirectory;
 
 	delete process.env.ccflare_DB_PATH;
 	delete process.env.ccflare_CONFIG_PATH;
@@ -221,12 +247,7 @@ describe("WebSocket request logging integration", () => {
 				inputTokens: 12,
 				outputTokens: 4,
 			});
-			expect(loggedRequest.costUsd).toBe(
-				await estimateCostUSD("gpt-4o", {
-					inputTokens: 12,
-					outputTokens: 4,
-				}),
-			);
+			expect(loggedRequest.costUsd).toBe(0.00007);
 
 			const persistedPayload = await waitFor(
 				() =>
@@ -468,13 +489,7 @@ describe("WebSocket request logging integration", () => {
 			reasoningTokens: 321,
 			totalTokens: 19246,
 		});
-		expect(loggedRequest.costUsd).toBe(
-			await estimateCostUSD("gpt-4o", {
-				inputTokens: 127,
-				cacheReadInputTokens: 18688,
-				outputTokens: 431,
-			}),
-		);
+		expect(loggedRequest.costUsd).toBe(0.0279875);
 	});
 
 	it("persists websocket token usage when response.completed exceeds the SSE usage buffer", async () => {

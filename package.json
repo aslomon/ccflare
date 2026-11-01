@@ -15,10 +15,12 @@
 		"desktop": "bun run --cwd apps/desktop start",
 		"dev:desktop": "bun run --cwd apps/desktop dev:watch",
 		"dev:dashboard": "bun run --cwd apps/web dev",
+		"accounts": "zsh scripts/ccflare-accounts.zsh",
+		"test:accounts": "zsh scripts/tests/ccflare-accounts.test.zsh",
 		"typecheck": "for d in packages/*/tsconfig.json apps/*/tsconfig.json; do echo \"typechecking $(dirname $d)...\" && bunx tsc -p $(dirname $d) --noEmit || exit 1; done",
 		"test": "for d in packages/* apps/*; do if [ -f \"$d/package.json\" ] && [ -d \"$d/src\" ]; then echo \"testing $d...\" && (cd \"$d\" && bun test ./src --pass-with-no-tests) || exit 1; fi; done",
 		"lint:check": "bunx --bun biome check apps/server apps/tui apps/desktop apps/web packages",
-		"verify": "bun run test && bun run typecheck && bun run lint:check",
+		"verify": "bun run test && bun run test:accounts && bun run typecheck && bun run lint:check",
 		"build": "bun run build:clients",
 		"build:clients": "bun run build:dashboard && bun run build:tui",
 		"build:dashboard": "bun run --cwd apps/web build",
@@ -31,7 +33,7 @@
 		"lint": "bunx --bun biome check --write --unsafe ."
 	},
 	"engines": {
-		"bun": ">=1.2.8"
+		"bun": ">=1.4.4"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.10",

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readBoundedBody } from "@ccflare/core";
 import { isHttpMethod, type RequestMeta } from "@ccflare/types";
 
 /**
@@ -28,7 +29,7 @@ export async function prepareRequestBody(req: Request): Promise<{
 	let buffer: ArrayBuffer | null = null;
 
 	if (req.body) {
-		buffer = await req.arrayBuffer();
+		buffer = await readBoundedBody(req, 16 * 1024 * 1024);
 	}
 
 	return {
@@ -55,10 +56,12 @@ export async function makeProxyRequest(
 	headers: Headers,
 	createBodyStream: () => ReadableStream<Uint8Array> | undefined,
 	hasBody: boolean,
+	signal?: AbortSignal,
 ): Promise<Response> {
 	return fetch(targetUrl, {
 		method,
 		headers,
+		signal,
 		body: createBodyStream(),
 		...(hasBody ? ({ duplex: "half" } as RequestInit) : {}),
 	});

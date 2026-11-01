@@ -2,27 +2,33 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+	budgetPolicySchema,
 	DEFAULT_STRATEGY,
 	isValidStrategy,
-	NETWORK,
 	RETENTION_DAYS,
-	TIME_CONSTANTS,
+	SESSION_ROTATION_DEFAULTS,
+	sessionRotationSchema,
 } from "@ccflare/core";
 import { Logger } from "@ccflare/logger";
 import {
+	type BudgetPolicy,
 	isFiniteNumber,
 	isLbStrategy,
 	isRecord,
+	type SessionRotationWindow,
 	type StrategyName,
 } from "@ccflare/types";
 import { resolveConfigPath } from "./paths";
+import { buildRuntimeConfig } from "./runtime-config";
 
 const log = new Logger("Config");
 
 export interface RuntimeConfig {
+	budgetPolicy?: BudgetPolicy;
 	clientId: string;
 	retry: { attempts: number; delayMs: number; backoff: number };
 	sessionDurationMs: number;
+	sessionRotation?: SessionRotationWindow;
 	port: number;
 }
 
@@ -33,19 +39,12 @@ export interface ConfigData {
 	retry_delay_ms?: number;
 	retry_backoff?: number;
 	session_duration_ms?: number;
+	session_rotation_min_ms?: number;
+	session_rotation_max_ms?: number;
 	port?: number;
 	data_retention_days?: number;
 	request_retention_days?: number;
 	[key: string]: string | number | boolean | undefined;
-}
-
-function parseNumber(value: string | undefined): number | undefined {
-	if (value === undefined) {
-		return undefined;
-	}
-
-	const parsed = Number(value);
-	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function sanitizeConfigData(value: unknown): ConfigData {
@@ -251,65 +250,47 @@ export class Config extends EventEmitter {
 		};
 	}
 
+	getSessionRotation(): SessionRotationWindow | undefined {
+		const minMs =
+			process.env.CCFLARE_SESSION_ROTATION_MIN_MS === undefined
+				? this.data.session_rotation_min_ms
+				: Number(process.env.CCFLARE_SESSION_ROTATION_MIN_MS);
+		const maxMs =
+			process.env.CCFLARE_SESSION_ROTATION_MAX_MS === undefined
+				? this.data.session_rotation_max_ms
+				: Number(process.env.CCFLARE_SESSION_ROTATION_MAX_MS);
+		if (minMs === undefined && maxMs === undefined) return undefined;
+		return sessionRotationSchema.parse({
+			minMs: minMs ?? SESSION_ROTATION_DEFAULTS.minMs,
+			maxMs: maxMs ?? SESSION_ROTATION_DEFAULTS.maxMs,
+		});
+	}
+
 	getRuntime(): RuntimeConfig {
-		// Default values
-		const defaults: RuntimeConfig = {
-			clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-			retry: {
-				attempts: 3,
-				delayMs: TIME_CONSTANTS.RETRY_DELAY_DEFAULT,
-				backoff: 2,
-			},
-			sessionDurationMs: TIME_CONSTANTS.SESSION_DURATION_DEFAULT,
-			port: NETWORK.DEFAULT_PORT,
+		return {
+			...buildRuntimeConfig(this.data, this.getSessionRotation()),
+			budgetPolicy: this.getBudgetPolicy(),
 		};
-
-		// Override with environment variables if present
-		if (process.env.CLIENT_ID) {
-			defaults.clientId = process.env.CLIENT_ID;
-		}
-		const retryAttempts = parseNumber(process.env.RETRY_ATTEMPTS);
-		if (retryAttempts !== undefined) {
-			defaults.retry.attempts = retryAttempts;
-		}
-		const retryDelayMs = parseNumber(process.env.RETRY_DELAY_MS);
-		if (retryDelayMs !== undefined) {
-			defaults.retry.delayMs = retryDelayMs;
-		}
-		const retryBackoff = parseNumber(process.env.RETRY_BACKOFF);
-		if (retryBackoff !== undefined) {
-			defaults.retry.backoff = retryBackoff;
-		}
-		const sessionDurationMs = parseNumber(process.env.SESSION_DURATION_MS);
-		if (sessionDurationMs !== undefined) {
-			defaults.sessionDurationMs = sessionDurationMs;
-		}
-		const port = parseNumber(process.env.PORT);
-		if (port !== undefined) {
-			defaults.port = port;
-		}
-
-		// Override with config file settings if present
-		if (this.data.client_id) {
-			defaults.clientId = this.data.client_id;
-		}
-		if (typeof this.data.retry_attempts === "number") {
-			defaults.retry.attempts = this.data.retry_attempts;
-		}
-		if (typeof this.data.retry_delay_ms === "number") {
-			defaults.retry.delayMs = this.data.retry_delay_ms;
-		}
-		if (typeof this.data.retry_backoff === "number") {
-			defaults.retry.backoff = this.data.retry_backoff;
-		}
-		if (typeof this.data.session_duration_ms === "number") {
-			defaults.sessionDurationMs = this.data.session_duration_ms;
-		}
-		if (typeof this.data.port === "number") {
-			defaults.port = this.data.port;
-		}
-
-		return defaults;
+	}
+	getBudgetPolicy(): BudgetPolicy {
+		const value = this.data.budget_policy;
+		const policy = budgetPolicySchema.parse(
+			typeof value === "string" ? JSON.parse(value) : {},
+		);
+		const enabled = process.env.CCFLARE_BUDGET_ENABLED;
+		if (enabled !== undefined && enabled !== "0" && enabled !== "1")
+			throw new Error("CCFLARE_BUDGET_ENABLED must be 0 or 1");
+		return budgetPolicySchema.parse({
+			...policy,
+			enabled: enabled === undefined ? policy.enabled : enabled === "1",
+			cutoffPercent:
+				process.env.CCFLARE_BUDGET_CUTOFF_PERCENT === undefined
+					? policy.cutoffPercent
+					: Number(process.env.CCFLARE_BUDGET_CUTOFF_PERCENT),
+		});
+	}
+	setBudgetPolicy(value: BudgetPolicy): void {
+		this.set("budget_policy", JSON.stringify(budgetPolicySchema.parse(value)));
 	}
 }
 

@@ -21,3 +21,4 @@ export {
 	parsePayloadStorePolicy,
 } from "./payload-store";
 export { analyzeIndexUsage } from "./performance-indexes";
+export { BudgetRepository } from "./repositories/budget.repository";

@@ -74,7 +74,31 @@ Use Tailwind's four-pixel scale. The established dashboard rhythm is:
 - Server Components are not applicable to this Bun/React dashboard; keep state
   and data fetching in hooks and keep formatting logic outside visual markup.
 
+### Terminal account manager
+
+- Keep the account table compact and aligned: name, provider, state, requests.
+- Use plain state labels (`ready`, `paused`, `rate-limited`, `expired`) so color
+  is never the only status signal.
+- Reserve orange for the product heading and menu shortcuts, green for completed
+  actions, and amber for destructive warnings.
+- OAuth flows must state the next user action before waiting for terminal input.
+- Print the OAuth URL as plain text for SSH/headless use; browser launch is only
+  a convenience, and the authorization code remains hidden during entry.
+- Replacement is recoverable by default: validate the new credential, pause and
+  rename the previous account, then activate the replacement.
+
 ## Data Visualization
+
+- Account cards show weekly usage against the configured cutoff, short-window
+  usage, telemetry age, reset, allocation capacity, and persisted session deadline.
+  Unknown usage stays textual; automatic budget blocks and manual pauses have
+  distinct labels. Monetary budget meters explicitly label local estimates.
+- Separate provider-reported usage from outstanding reservations. Show the
+  sustainable weekly pace and forecast confidence with explicit units. Forecasts
+  describe current compatible-pool demand; overload and spent burst allowance use
+  a textual warning. Session deadlines are latest switch times and can be
+  interrupted by measured quota or pacing. Do not present internal work units as
+  a subscription allowance or promise that a forecast guarantees availability.
 
 - Never round source values before chart construction or aggregation.
 - Seven-day series show both date and time; duplicate `HH:mm` labels across
@@ -109,3 +133,7 @@ variation.
   never masquerade as complete data.
 - Never render credentials, authorization headers, refresh tokens, or raw
   secret-bearing configuration values.
+
+### Local inference accounts
+
+Reuse the existing budget summary surface and semantic badge. Local accounts show zero variable API fees and the concurrency cap instead of a weekly meter or reset forecast. Eligibility is not a live model-health claim.

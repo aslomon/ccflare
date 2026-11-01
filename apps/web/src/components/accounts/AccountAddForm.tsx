@@ -24,6 +24,7 @@ interface AccountAddFormProps {
 		name: string;
 		provider: ApiKeyProvider;
 		apiKey: string;
+		baseUrl?: string;
 	}) => Promise<void>;
 	onStartOAuth: (params: {
 		name: string;
@@ -58,6 +59,7 @@ export function AccountAddForm({
 	const [authUrl, setAuthUrl] = useState("");
 	const [authorizationCode, setAuthorizationCode] = useState("");
 	const [isCompletingOAuth, setIsCompletingOAuth] = useState(false);
+	const [baseUrl, setBaseUrl] = useState("");
 	const [newAccount, setNewAccount] = useState({
 		name: "",
 		provider: "" as "" | AccountProvider,
@@ -76,6 +78,7 @@ export function AccountAddForm({
 		setAuthUrl("");
 		setAuthorizationCode("");
 		setIsCompletingOAuth(false);
+		setBaseUrl("");
 		setNewAccount({ name: "", provider: "", apiKey: "" });
 	}, []);
 
@@ -155,6 +158,7 @@ export function AccountAddForm({
 				name: newAccount.name,
 				provider: selectedApiKeyProvider,
 				apiKey: newAccount.apiKey,
+				baseUrl: baseUrl.trim() || undefined,
 			});
 			setNewAccount({ name: "", provider: "", apiKey: "" });
 			onSuccess();
@@ -273,6 +277,21 @@ export function AccountAddForm({
 										: "sk-proj-..."
 								}
 							/>
+						</div>
+					)}
+					{selectedApiKeyProvider && (
+						<div className="space-y-2">
+							<Label htmlFor="base-url">API base URL (optional)</Label>
+							<Input
+								id="base-url"
+								value={baseUrl}
+								onChange={(event) => setBaseUrl(event.target.value)}
+								placeholder="https://api.z.ai/api/anthropic"
+							/>
+							<p className="text-xs text-muted-foreground">
+								Use the Coding Plan endpoint for Z.ai. The account is admitted
+								after its quota check.
+							</p>
 						</div>
 					)}
 					{selectedOAuthProvider && (

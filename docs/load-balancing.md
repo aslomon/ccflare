@@ -6,9 +6,13 @@
 3. [Configuration](#configuration)
 4. [Account Selection Process](#account-selection-process)
 5. [Performance Considerations](#performance-considerations)
-6. [Important: Why Only Session-Based Strategy](#important-why-only-session-based-strategy)
+6. [Session strategy and adaptive budgets](#session-strategy-and-adaptive-budgets)
 
 ## Overview
+
+For configurable timed rotation across the account pool, see
+[Timed account rotation](session-rotation.md). The local installation uses a
+20-90 minute window rather than the legacy five-hour first-available behavior.
 
 ccflare implements a session-based load balancing system to distribute requests across multiple Claude OAuth accounts, avoiding rate limits and ensuring high availability. The system maintains configurable sessions (default: 5 hours) with individual accounts to minimize rate limit issues.
 
@@ -21,7 +25,7 @@ ccflare implements a session-based load balancing system to distribute requests 
 
 ## Session-Based Strategy
 
-**Description**: Maintains sticky sessions with individual accounts for a configurable duration (default: 5 hours). This is the only load balancing strategy available in ccflare, designed to minimize account switching and reduce the likelihood of hitting rate limits.
+**Description**: Maintains sticky sessions with individual accounts for a configurable duration (default: 5 hours). Budget-aware routing is an optional managed layer; this section describes legacy selection.
 
 **Use Case**: Optimal for production environments where minimizing rate limits is crucial. Particularly effective for applications with sustained user sessions.
 
@@ -245,42 +249,14 @@ Monitor these key metrics:
 - Session duration effectiveness
 - Failover frequency
 
-## Important: Why Only Session-Based Strategy
+## Session strategy and adaptive budgets
 
-**⚠️ WARNING: Only the session-based load balancer strategy is available in ccflare.**
-
-Other strategies like round-robin, least-requests, or weighted distribution have been removed from the codebase as they can trigger Claude's anti-abuse systems and result in automatic account bans. Here's why they were removed:
-
-### Account Ban Risks
-
-1. **Rapid Account Switching**: Strategies that frequently switch between accounts create suspicious patterns that Claude's systems detect as potential abuse.
-
-2. **Unnatural Usage Patterns**: Round-robin and similar strategies create artificial request patterns that don't match normal human usage.
-
-3. **Rate Limit Triggering**: Frequent account switching increases the likelihood of hitting rate limits across multiple accounts simultaneously.
-
-### Why Session-Based is Safe
-
-The session-based strategy mimics natural user behavior:
-- Maintains consistent sessions with individual accounts
-- Reduces account switching to once every 5 hours (configurable)
-- Creates usage patterns similar to a regular Claude user
-- Minimizes the risk of triggering anti-abuse systems
-
-### Best Practices
-
-1. **Always use session-based strategy**: This is the only strategy that won't risk your accounts
-2. **Configure appropriate session duration**: Default 5 hours is recommended
-3. **Monitor account health**: Watch for any rate limit issues or warnings
-4. **Avoid custom strategies**: Do not implement custom load balancing strategies unless you fully understand the risks
-
-If you need different behavior, adjust the session duration rather than switching strategies:
-```json
-{
-    "lb_strategy": "session",
-    "session_duration_ms": 18000000  // 5 hours (recommended)
-}
-```
+The legacy `SessionStrategy` remains available when budget routing is disabled.
+Managed installations use the persisted 20–90-minute budget scheduler described
+in [Adaptive account budgets](account-budgets.md). It keeps sessions while changing
+allocation according to verified provider limits and consumption estimates.
+Provider limits and service terms remain authoritative; a routing strategy does
+not provide a guarantee against limits or account restrictions.
 
 ## LoadBalancingStrategy Interface
 
@@ -311,4 +287,4 @@ The `RequestMeta` object contains:
 - `timestamp`: Request timestamp
 - `agentUsed`: Optional agent identifier
 
-Currently, only the `SessionStrategy` implementation exists in the codebase at `/packages/proxy/src/strategies/index.ts`.
+`SessionStrategy` remains in `packages/proxy/src/strategies/index.ts`; adaptive routing lives in `packages/proxy/src/budget/`.

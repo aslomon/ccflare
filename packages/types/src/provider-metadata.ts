@@ -31,6 +31,22 @@ const PROVIDER_METADATA_MAP = {
 		defaultBaseUrl: "https://chatgpt.com/backend-api/codex",
 		specialRequirements: ["Requires Codex OAuth authentication"],
 	},
+	"grok-build": {
+		displayLabel: "Grok Build",
+		authMethod: "oauth",
+		supportsOAuth: false,
+		supportsWebSocket: false,
+		defaultBaseUrl: "https://cli-chat-proxy.grok.com/v1",
+		specialRequirements: ["Native Grok CLI login; CLI owns credential refresh"],
+	},
+	lmstudio: {
+		displayLabel: "LM Studio (local)",
+		authMethod: "api_key",
+		supportsOAuth: false,
+		supportsWebSocket: false,
+		defaultBaseUrl: "http://127.0.0.1:1234",
+		specialRequirements: ["Local inference; zero variable API fees"],
+	},
 } as const satisfies Record<
 	string,
 	{

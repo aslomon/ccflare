@@ -4,8 +4,10 @@ import type {
 	Account,
 	LoadBalancingStrategy,
 	RequestMeta,
+	SessionRotationWindow,
 	StrategyStore,
 } from "@ccflare/types";
+import { selectRotatingSession } from "./rotation";
 
 export class SessionStrategy implements LoadBalancingStrategy {
 	private sessionDurationMs: number;
@@ -14,6 +16,7 @@ export class SessionStrategy implements LoadBalancingStrategy {
 
 	constructor(
 		sessionDurationMs: number = TIME_CONSTANTS.SESSION_DURATION_DEFAULT,
+		private readonly rotation?: SessionRotationWindow,
 	) {
 		this.sessionDurationMs = sessionDurationMs;
 	}
@@ -47,6 +50,8 @@ export class SessionStrategy implements LoadBalancingStrategy {
 	}
 
 	select(accounts: Account[], _meta: RequestMeta): Account[] {
+		if (this.rotation)
+			return selectRotatingSession(accounts, this.rotation, this.store);
 		const now = Date.now();
 
 		// Find account with active session (most recent session_start within window)

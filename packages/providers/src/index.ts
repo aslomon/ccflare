@@ -20,6 +20,8 @@ export * from "./types";
 import { AnthropicProvider } from "./providers/anthropic/provider";
 import { ClaudeCodeProvider } from "./providers/claude-code/provider";
 import { CodexProvider } from "./providers/codex/provider";
+import { GrokBuildProvider } from "./providers/grok-build/provider";
+import { LmStudioProvider } from "./providers/lmstudio/provider";
 import { OpenAIProvider } from "./providers/openai/provider";
 // Auto-register built-in providers
 import { registerProvider } from "./registry";
@@ -28,3 +30,9 @@ registerProvider(new AnthropicProvider());
 registerProvider(new OpenAIProvider());
 registerProvider(new ClaudeCodeProvider());
 registerProvider(new CodexProvider());
+registerProvider(new LmStudioProvider());
+registerProvider(new GrokBuildProvider());
+
+export { parseCodexQuota, readCodexQuota } from "./providers/codex/quota";
+export { readGrokQuota } from "./providers/grok-build/quota";
+export { parseClaudeQuota, parseZaiQuota, readProviderQuota } from "./quota";

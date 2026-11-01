@@ -35,6 +35,7 @@ export function useAccountsPageModel() {
 			name: string;
 			provider: ApiKeyProvider;
 			apiKey: string;
+			baseUrl?: string;
 		}) => api.createApiKeyAccount(params),
 		onSuccess: () => {
 			setActionError(null);
@@ -111,7 +112,7 @@ export function useAccountsPageModel() {
 
 	const togglePause = useMutation({
 		mutationFn: (account: AccountResponse) =>
-			account.paused
+			(account.manualPaused ?? account.paused)
 				? api.resumeAccount(account.id)
 				: api.pauseAccount(account.id),
 		onSuccess: () => invalidateAccounts(),

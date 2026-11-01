@@ -17,9 +17,11 @@ describe("provider metadata", () => {
 			"openai",
 			"claude-code",
 			"codex",
+			"grok-build",
+			"lmstudio",
 		]);
-		expect(API_KEY_PROVIDERS).toEqual(["anthropic", "openai"]);
-		expect(OAUTH_PROVIDERS).toEqual(["claude-code", "codex"]);
+		expect(API_KEY_PROVIDERS).toEqual(["anthropic", "openai", "lmstudio"]);
+		expect(OAUTH_PROVIDERS).toEqual(["claude-code", "codex", "grok-build"]);
 		expect(isApiKeyProvider("anthropic")).toBe(true);
 		expect(isApiKeyProvider("claude-code")).toBe(false);
 		expect(isOAuthProvider("codex")).toBe(true);
@@ -32,6 +34,8 @@ describe("provider metadata", () => {
 			{ value: "openai", label: "OpenAI" },
 			{ value: "claude-code", label: "Claude Code" },
 			{ value: "codex", label: "Codex" },
+			{ value: "grok-build", label: "Grok Build" },
+			{ value: "lmstudio", label: "LM Studio (local)" },
 		]);
 		expect(getProviderDisplayLabel("claude-code")).toBe("Claude Code");
 		expect(getProviderMetadata("anthropic")).toMatchObject({

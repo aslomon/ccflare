@@ -51,8 +51,10 @@ describe("CodexProvider", () => {
 
 		expect(headers.get("authorization")).toBe("Bearer codex-access-token");
 		expect(headers.get("originator")).toBe("codex_cli_rs");
-		expect(headers.get("user-agent")).toContain("codex_cli_rs/");
-		expect(headers.get("user-agent")).toContain("arm64");
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
 		expectRemovedHeaders(headers, [
 			"x-api-key",
 			"anthropic-version",
@@ -60,6 +62,124 @@ describe("CodexProvider", () => {
 			"accept-encoding",
 			"content-encoding",
 		]);
+	});
+
+	it("forwards a Codex CLI user agent when its version matches", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "0.170.1",
+				"user-agent": "codex_cli_rs/0.170.1 (Linux; x86_64)",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.170.1");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.170.1 (Linux; x86_64)",
+		);
+		expect(headers.get("originator")).toBe("codex_cli_rs");
+	});
+
+	it("replaces a leading-zero version with the fallback pair", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "01.2.3",
+				"user-agent": "codex_cli_rs/01.2.3 (Mac OS; arm64)",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+	});
+
+	it("replaces a non-CLI user agent and its version with the fallback pair", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "0.170.1",
+				"user-agent": "Mozilla/5.0",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+	});
+
+	it("uses the CLI user-agent version when the version header is absent", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				"user-agent": "codex_cli_rs/0.170.1 (Linux; x86_64)",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.170.1");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.170.1 (Linux; x86_64)",
+		);
+	});
+
+	it("replaces a CLI user agent whose version differs from the header", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "0.170.1",
+				"user-agent": "codex_cli_rs/0.171.2 (Linux; x86_64)",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+	});
+
+	it("replaces a malformed Codex CLI user agent with the fallback pair", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "9.9.9",
+				"user-agent": "codex_cli_rs/garbage",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+	});
+
+	it("ignores a malformed version header and falls back", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({
+				version: "0.164",
+				"user-agent": "Mozilla/5.0",
+			}),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+	});
+
+	it("falls back to Codex client 0.164.0 when version and user agent are absent", () => {
+		const headers = provider.prepareHeaders(
+			new Headers(),
+			createOAuthAccount("codex"),
+		);
+
+		expect(headers.get("version")).toBe("0.164.0");
+		expect(headers.get("user-agent")).toBe(
+			"codex_cli_rs/0.164.0 (Mac OS; arm64)",
+		);
+		expect(headers.get("originator")).toBe("codex_cli_rs");
 	});
 
 	it("refreshes OAuth tokens via auth.openai.com with rotating refresh tokens", async () => {

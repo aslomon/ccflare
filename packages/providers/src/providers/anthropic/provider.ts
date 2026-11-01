@@ -86,6 +86,12 @@ export class AnthropicProvider extends BaseProvider {
 
 	prepareHeaders(headers: Headers, account: Account | null): Headers {
 		const newHeaders = new Headers(headers);
+		if (account?.base_url?.startsWith("https://api.z.ai/") && account.api_key) {
+			newHeaders.delete("x-api-key");
+			newHeaders.set("Authorization", `Bearer ${account.api_key}`);
+			deleteTransportHeaders(newHeaders);
+			return newHeaders;
+		}
 
 		if (account?.api_key) {
 			newHeaders.set("x-api-key", account.api_key);

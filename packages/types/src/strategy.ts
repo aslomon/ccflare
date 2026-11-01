@@ -1,5 +1,10 @@
 import type { Account } from "./account";
 
+export interface SessionRotationWindow {
+	minMs: number;
+	maxMs: number;
+}
+
 export const StrategyName = {
 	Session: "session",
 } as const;
@@ -19,6 +24,7 @@ export function isLbStrategy(value: string): value is StrategyName {
  * Allows strategies to interact with the database without direct SQL access
  */
 export interface StrategyStore {
+	getAccountsByProvider?(provider: Account["provider"]): Account[];
 	/**
 	 * Reset session for an account
 	 * Updates session_start and session_request_count

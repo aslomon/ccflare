@@ -1,5 +1,10 @@
 export { waitForProxyBackgroundTasks } from "./background-tasks";
+export { BudgetControl } from "./budget/control";
 export { handleCompatibilityProxy } from "./compat/index";
+export {
+	getValidAccessToken,
+	refreshAccessTokenSafe,
+} from "./handlers/token-manager";
 export {
 	getUsageWorker,
 	getUsageWorkerHealth,

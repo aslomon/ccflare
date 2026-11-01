@@ -32,6 +32,7 @@ export function createConfigHandlers(config: Config) {
 				port: runtime.port ?? NETWORK.DEFAULT_PORT,
 				sessionDurationMs:
 					runtime.sessionDurationMs ?? TIME_CONSTANTS.SESSION_DURATION_FALLBACK,
+				sessionRotation: runtime.sessionRotation,
 			};
 			return jsonResponse(response);
 		},

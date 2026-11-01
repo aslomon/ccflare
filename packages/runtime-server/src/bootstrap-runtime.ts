@@ -8,15 +8,23 @@ import {
 	TIME_CONSTANTS,
 } from "@ccflare/core";
 import type { DatabaseOperations } from "@ccflare/database";
-import { AsyncDbWriter, DatabaseFactory } from "@ccflare/database";
+import {
+	AsyncDbWriter,
+	BudgetRepository,
+	DatabaseFactory,
+} from "@ccflare/database";
 import { Logger } from "@ccflare/logger";
 import { providerRegistry } from "@ccflare/providers";
 import {
+	BudgetControl,
 	getUsageWorker,
 	getUsageWorkerHealth,
 	type ProxyContext,
 	SessionStrategy,
 } from "@ccflare/proxy";
+import { subscribeBudgetUsage } from "./budget-events";
+import { BudgetMonitor } from "./budget-monitor";
+import { createQuotaReader } from "./quota-reader";
 
 export type BootstrappedRuntime = {
 	config: Config;
@@ -43,6 +51,8 @@ function createRuntimeConfig(config: Config, port: number): RuntimeConfig {
 			"session_duration_ms",
 			TIME_CONSTANTS.SESSION_DURATION_DEFAULT,
 		) as number,
+		sessionRotation: config.getSessionRotation(),
+		budgetPolicy: config.getBudgetPolicy(),
 		port,
 	};
 }
@@ -59,7 +69,10 @@ function wireStrategyHotReload(
 			log.info(`Strategy configuration changed: ${changeType}`);
 			const newStrategyName = config.getStrategy();
 			if (newStrategyName === "session") {
-				const strategy = new SessionStrategy(runtimeConfig.sessionDurationMs);
+				const strategy = new SessionStrategy(
+					runtimeConfig.sessionDurationMs,
+					config.getSessionRotation(),
+				);
 				strategy.initialize(dbOps);
 				proxyContext.strategy = strategy;
 			}
@@ -93,9 +106,15 @@ export function bootstrapRuntime(
 	container.registerInstance(SERVICE_KEYS.PricingLogger, pricingLogger);
 	setPricingLogger(pricingLogger);
 
+	const budgets = new BudgetControl(
+		dbOps,
+		new BudgetRepository(dbOps.getDatabase()),
+		config.getBudgetPolicy(),
+	);
 	const apiRouter = new APIRouter({
 		config,
 		dbOps,
+		budgets,
 		getProviders: () => providerRegistry.listProviders(),
 		getRuntimeHealth: () => ({
 			asyncWriter: {
@@ -108,10 +127,14 @@ export function bootstrapRuntime(
 		}),
 	});
 
-	const strategy = new SessionStrategy(runtimeConfig.sessionDurationMs);
+	const strategy = new SessionStrategy(
+		runtimeConfig.sessionDurationMs,
+		runtimeConfig.sessionRotation,
+	);
 	strategy.initialize(dbOps);
 
 	const proxyContext: ProxyContext = {
+		budgets,
 		strategy,
 		dbOps,
 		runtime: runtimeConfig,
@@ -122,6 +145,10 @@ export function bootstrapRuntime(
 	};
 
 	wireStrategyHotReload(config, log, dbOps, proxyContext, runtimeConfig);
+	const monitor = new BudgetMonitor(budgets, createQuotaReader(proxyContext));
+	registerDisposable(subscribeBudgetUsage(budgets));
+	registerDisposable(monitor);
+	monitor.start();
 
 	return {
 		config,

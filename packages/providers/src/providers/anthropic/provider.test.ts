@@ -10,6 +10,16 @@ import { AnthropicProvider } from "./provider";
 
 describe("AnthropicProvider", () => {
 	const provider = new AnthropicProvider();
+	it("uses Bearer authentication for the Z.ai coding endpoint", () => {
+		const headers = provider.prepareHeaders(
+			new Headers({ "x-api-key": "incoming" }),
+			createApiKeyAccount("anthropic", {
+				base_url: "https://api.z.ai/api/anthropic",
+			}),
+		);
+		expect(headers.get("Authorization")).toBe("Bearer sk-ant-test");
+		expect(headers.get("x-api-key")).toBeNull();
+	});
 
 	it("builds upstream URLs from the stripped Anthropic path", () => {
 		expectBuildUrlCases(provider, [

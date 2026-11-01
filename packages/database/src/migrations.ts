@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { Logger } from "@ccflare/logger";
+import { migrateBudgets } from "./budget-migration";
 import { addPerformanceIndexes } from "./performance-indexes";
 import { runRequestLinkageMigration } from "./request-linkage-migration";
 
@@ -478,4 +479,5 @@ export function runMigrations(db: Database): void {
 		`CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON requests(timestamp DESC)`,
 	);
 	addPerformanceIndexes(db);
+	migrateBudgets(db);
 }

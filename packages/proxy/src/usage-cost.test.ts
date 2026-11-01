@@ -32,3 +32,16 @@ describe("resolveUsageCost", () => {
 		expect(result.status).toBe("unavailable");
 	});
 });
+
+it("records zero local API fees without pricing catalogue lookup", async () => {
+	const result = await resolveUsageCost(
+		"qwen/test",
+		{ inputTokens: 100, outputTokens: 50 },
+		async () => {
+			throw new Error("must not fetch cloud pricing");
+		},
+		"lmstudio",
+	);
+	expect(result.costUsd).toBe(0);
+	expect(result.source).toBe("local");
+});

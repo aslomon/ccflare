@@ -211,3 +211,19 @@ That keeps:
 - runtime orchestration generic
 - proxy logic provider-agnostic where possible
 - provider behavior easy to test in isolation
+
+### LM Studio
+
+`lmstudio` uses Anthropic-compatible messages at `/v1/lmstudio/v1/messages`. It strips incoming cloud authentication, uses its own account, normalizes request-level thinking, and has a two-request local capacity gate. Usage remains attributed to the local provider with zero variable API fees. See [local workers](local-workers.md).
+
+## Grok Build subscription
+
+`grok-build` routes `/v1/grok-build/*` to `https://cli-chat-proxy.grok.com/v1` with native HTTP/Responses streaming. Install and sign in with the official Grok CLI. On this managed machine, run setup module 46 after module 45; `ccflare-grok-login --device-auth` signs in and registers/configures the account. Plain `grok` uses auto permissions with sandbox off.
+
+The account is bound to the native CLI user ID. The CLI owns the refresh token and its file locking; ccflare stores an identity marker and imports the current access token. A changed login cannot silently reuse a different account. The fixed subscription origin rejects custom upstreams, and API-key fallback is disabled in the managed client. Credentials stay outside Git.
+
+The quota adapter reads the native billing endpoint, validates a current weekly period, and uses the provider's actual percentage and reset. Protobuf-omitted zero is accepted only with a valid period; absent, expired or monthly telemetry blocks admission. The existing cutoff, pacing, reservations and manual pause behavior apply. Prepaid/on-demand balances do not enlarge the subscription budget.
+
+The native Responses usage events use the existing parser for input, output, cache and reasoning tokens. A configured route is only considered usable after a real CLI response and attributed request evidence. This integration does not start another productive Cockpit lane; the four-lane ceiling and one-heavy-gate rule still apply.
+
+Large native Grok requests use Zstandard. The provider decodes them with a 16 MiB output bound before validation and clears the compressed content length. Known model/settings/billing/bundle and session-signal metadata endpoints keep account authentication and manual pauses but do not consume inference reservations; unknown endpoints remain budget-managed.

@@ -14,6 +14,8 @@ export interface RateLimitInfo {
 }
 
 export interface Provider {
+	isMetadataRequest?(method: string, upstreamPath: string): boolean;
+	prepareBody?(body: ArrayBuffer | null, headers?: Headers): ArrayBuffer | null;
 	name: string;
 	defaultBaseUrl: string;
 
@@ -71,7 +73,7 @@ export interface Provider {
 	/**
 	 * Check if the response is a streaming response
 	 */
-	isStreamingResponse?(response: Response): boolean;
+	isStreamingResponse?(response: Response, upstreamPath?: string): boolean;
 }
 
 // OAuth-specific types

@@ -1,6 +1,7 @@
 import { requestEvents, ServiceUnavailableError } from "@ccflare/core";
 import { Logger } from "@ccflare/logger";
 import { isRequestPayload, isRequestSummary } from "@ccflare/types";
+import { budgetRequestInfo, budgetUnavailable } from "./budget/request";
 import {
 	createRequestMetadata,
 	ERROR_MESSAGES,
@@ -20,6 +21,9 @@ import {
 
 export type { ProxyContext } from "./handlers";
 
+import { LocalCapacity } from "./local-capacity";
+
+const localCapacity = new LocalCapacity(2);
 const log = new Logger("Proxy");
 
 let usageWorkerInstance: UsageWorkerController | null = null;
@@ -109,15 +113,23 @@ export async function terminateUsageWorker(): Promise<void> {
  * @throws {ServiceUnavailableError} If all accounts fail to proxy the request
  * @throws {ProviderError} If unauthenticated proxy fails
  */
-export async function handleProxy(
+async function handleProxyRequest(
 	req: Request,
 	url: URL,
 	ctx: ProxyContext,
 ): Promise<Response> {
-	const requestContext = resolveProxyContext(url, ctx);
-	if (!requestContext) {
+	const resolved = resolveProxyContext(url, ctx);
+	if (!resolved) {
 		return new Response("Not Found", { status: 404 });
 	}
+	// Native session metadata carries no inference usage. Retain account auth,
+	// manual pauses and transport limits without charging model reservations.
+	const requestContext = resolved.provider.isMetadataRequest?.(
+		req.method,
+		resolved.upstreamPath,
+	)
+		? { ...resolved, budgets: undefined }
+		: resolved;
 
 	// 1. Create request metadata before any buffering work so total timing
 	// includes proxy-side request preparation overhead.
@@ -131,13 +143,64 @@ export async function handleProxy(
 	});
 
 	// 2. Prepare request body
-	const { buffer: requestBodyBuffer } = await prepareRequestBody(req);
+	let requestBodyBuffer: ArrayBuffer | null;
+	try {
+		({ buffer: requestBodyBuffer } = await prepareRequestBody(req));
+	} catch {
+		return Response.json(
+			{
+				error: {
+					type: "invalid_request",
+					message: "Request body exceeds 16 MiB or could not be read",
+				},
+			},
+			{ status: 413 },
+		);
+	}
+	try {
+		requestBodyBuffer =
+			requestContext.provider.prepareBody?.(requestBodyBuffer, req.headers) ??
+			requestBodyBuffer;
+	} catch {
+		return Response.json(
+			{
+				error: {
+					type: "invalid_request",
+					message: "Invalid provider request settings",
+				},
+			},
+			{ status: 400 },
+		);
+	}
+	if (requestContext.budgets?.enabled) {
+		try {
+			const info = budgetRequestInfo(requestBodyBuffer);
+			requestContext.budgetModel = info.model;
+			requestContext.budgetWork = info.work;
+		} catch {
+			return Response.json(
+				{
+					error: {
+						type: "invalid_request",
+						message: "Invalid budget-managed request",
+					},
+				},
+				{ status: 400 },
+			);
+		}
+	}
 
 	// 3. Select accounts
 	const accounts = selectAccountsForRequest(requestMeta, requestContext);
 
 	// 4. Handle no accounts case
 	if (accounts.length === 0) {
+		if (
+			requestContext.budgets?.enabled ||
+			requestContext.providerName === "lmstudio" ||
+			requestContext.providerName === "grok-build"
+		)
+			return budgetUnavailable();
 		return proxyUnauthenticated(
 			req,
 			url,
@@ -179,8 +242,23 @@ export async function handleProxy(
 	}
 
 	// 7. All accounts failed
+	if (requestContext.budgets?.enabled) return budgetUnavailable();
 	throw new ServiceUnavailableError(
 		`${ERROR_MESSAGES.ALL_ACCOUNTS_FAILED} (${accounts.length} attempted)`,
 		requestContext.providerName,
 	);
+}
+
+export async function handleProxy(
+	req: Request,
+	url: URL,
+	ctx: ProxyContext,
+): Promise<Response> {
+	if (req.method === "POST" && url.pathname.startsWith("/v1/lmstudio/")) {
+		return localCapacity.run(
+			(signal) => handleProxyRequest(new Request(req, { signal }), url, ctx),
+			req.signal,
+		);
+	}
+	return handleProxyRequest(req, url, ctx);
 }

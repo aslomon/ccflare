@@ -92,9 +92,12 @@ describe("WebSocket proxy behavior", () => {
 		expect(capture.headers.authorization).toBe("Bearer codex-access-token");
 		expect(capture.headers.originator).toBe("codex_cli_rs");
 		expect(capture.headers["user-agent"]).toContain("codex_cli_rs/");
-		expect(capture.headers.version).toBe("0.118.0");
+		expect(capture.headers.version).toMatch(/^\d+\.\d+\.\d+$/);
+		expect(capture.headers["user-agent"]).toStartWith(
+			`codex_cli_rs/${capture.headers.version} `,
+		);
 		expect(capture.headers["openai-beta"]).toBe("responses=experimental");
-		expect(capture.headers["chatgpt-account-id"]).toBe("acct_123");
+		expect(capture.headers["chatgpt-account-id"]).toBeUndefined();
 		expect(capture.headers["x-client-request-id"]).toBe("req_123");
 		expect(capture.headers["x-codex-turn-metadata"]).toBe('{"turn":1}');
 		expect(capture.headers.session_id).toBe("session_123");

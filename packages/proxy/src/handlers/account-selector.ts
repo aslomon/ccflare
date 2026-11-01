@@ -14,7 +14,13 @@ export function getOrderedAccounts(
 	const providerAccounts = ctx.dbOps.getAvailableAccountsByProvider(
 		ctx.providerName,
 	);
-	return ctx.strategy.select(providerAccounts, meta);
+	return ctx.budgets?.enabled
+		? ctx.budgets.order(
+				providerAccounts,
+				ctx.budgetModel ?? null,
+				ctx.budgetWork ?? 0,
+			)
+		: ctx.strategy.select(providerAccounts, meta);
 }
 
 /**

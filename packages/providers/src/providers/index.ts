@@ -17,4 +17,5 @@ export {
 	CodexOAuthProvider,
 	CodexProvider,
 } from "./codex/index";
+export { GrokBuildProvider } from "./grok-build/provider";
 export { OpenAIOAuthProvider, OpenAIProvider } from "./openai/index";

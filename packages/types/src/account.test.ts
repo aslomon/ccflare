@@ -13,6 +13,8 @@ describe("toAccount", () => {
 			"openai",
 			"claude-code",
 			"codex",
+			"grok-build",
+			"lmstudio",
 		]);
 	});
 

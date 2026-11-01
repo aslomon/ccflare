@@ -14,7 +14,7 @@ export interface TokenBreakdown {
 export interface CostEstimateResult {
 	readonly costUsd: number | null;
 	readonly status: "estimated" | "unavailable";
-	readonly source: "models.dev" | "none";
+	readonly source: "models.dev" | "none" | "local";
 }
 
 const PriceSchema = z.number().finite().nonnegative();

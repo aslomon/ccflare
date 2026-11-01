@@ -1,7 +1,12 @@
 import { requestEvents } from "@ccflare/core";
 import { BadRequest, errorResponse, ServiceUnavailable } from "@ccflare/http";
 import { Logger } from "@ccflare/logger";
-import type { AccountProvider } from "@ccflare/types";
+import { type AccountProvider, isRecord } from "@ccflare/types";
+import {
+	budgetRequestInfo,
+	holdBudgetResponse,
+	reserveBudgetRequest,
+} from "../budget/request";
 import {
 	type ResolvedProxyContext,
 	selectAccountsForRequest,
@@ -257,6 +262,17 @@ async function tryProviderFamily(
 		plan.providerName,
 		plan.upstreamPath,
 	);
+	requestContext.budgetModel = stripped.model;
+	const budgetBuffer = new TextEncoder().encode(
+		JSON.stringify(plan.body),
+	).buffer;
+	if (ctx.budgets?.enabled) {
+		try {
+			requestContext.budgetWork = budgetRequestInfo(budgetBuffer).work;
+		} catch {
+			return buildCompatibilityError(400, "Invalid budget-managed request");
+		}
+	}
 	const accounts = selectAccountsForRequest(requestMeta, requestContext);
 
 	if (accounts.length === 0) {
@@ -266,6 +282,14 @@ async function tryProviderFamily(
 	let lastErrorResponse: Response | null = null;
 	for (let attempt = 0; attempt < accounts.length; attempt += 1) {
 		const account = accounts[attempt];
+		const reservation = await reserveBudgetRequest(
+			ctx.budgets,
+			account,
+			budgetBuffer,
+			requestMeta.id,
+		);
+		if (!reservation) continue;
+		let forwarded = false;
 		try {
 			const accessToken = await getValidAccessToken(account, requestContext);
 			const requestAccount =
@@ -311,7 +335,7 @@ async function tryProviderFamily(
 			}
 
 			const transformedResponse = await plan.transformResponse(response);
-			return await forwardToClient(
+			const forwardedResponse = await forwardToClient(
 				{
 					requestId: requestMeta.id,
 					method: requestMeta.method,
@@ -329,11 +353,16 @@ async function tryProviderFamily(
 				},
 				requestContext,
 			);
+			forwarded = true;
+			return holdBudgetResponse(forwardedResponse, ctx.budgets, reservation);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			log.error(
 				`Compatibility request failed for ${actualProvider}/${account.name}: ${detail}`,
 			);
+		} finally {
+			if (!forwarded && reservation !== "unmanaged")
+				ctx.budgets?.finish(reservation);
 		}
 	}
 
@@ -357,7 +386,20 @@ export async function handleCompatibilityProxy(
 		);
 	}
 
-	const { buffer: requestBodyBuffer } = await prepareRequestBody(req);
+	let requestBodyBuffer: ArrayBuffer | null;
+	try {
+		({ buffer: requestBodyBuffer } = await prepareRequestBody(req));
+	} catch {
+		return Response.json(
+			{
+				error: {
+					type: "invalid_request",
+					message: "Request body exceeds 16 MiB or could not be read",
+				},
+			},
+			{ status: 413 },
+		);
+	}
 	if (!requestBodyBuffer) {
 		return buildCompatibilityError(
 			400,
@@ -367,9 +409,11 @@ export async function handleCompatibilityProxy(
 
 	let requestBodyJson: Record<string, unknown>;
 	try {
-		requestBodyJson = JSON.parse(
+		const parsed: unknown = JSON.parse(
 			new TextDecoder().decode(requestBodyBuffer),
-		) as Record<string, unknown>;
+		);
+		if (!isRecord(parsed)) throw new Error("JSON object required");
+		requestBodyJson = parsed;
 	} catch {
 		return buildCompatibilityError(
 			400,

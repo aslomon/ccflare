@@ -3,10 +3,14 @@ import type { DatabaseOperations } from "@ccflare/database";
 import type {
 	AccountProvider,
 	AuthMethod,
+	BudgetAccountView,
+	BudgetManagement,
 	RuntimeHealth,
 } from "@ccflare/types";
 
 export interface AccountResponse {
+	budget?: BudgetAccountView;
+	manualPaused?: boolean;
 	id: string;
 	name: string;
 	provider: AccountProvider;
@@ -35,6 +39,7 @@ export interface AccountResponse {
 }
 
 export interface APIContext {
+	budgets?: BudgetManagement;
 	config: Config;
 	dbOps: DatabaseOperations;
 	getProviders: () => string[];

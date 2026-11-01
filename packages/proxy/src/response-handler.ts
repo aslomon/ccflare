@@ -87,7 +87,8 @@ export async function forwardToClient(
 
 	const responseHeadersObj = Object.fromEntries(response.headers.entries());
 
-	const isStream = ctx.provider.isStreamingResponse?.(response) ?? false;
+	const isStream =
+		ctx.provider.isStreamingResponse?.(response, ctx.upstreamPath) ?? false;
 	const limitedRequestBody = limitCapturedBytes(
 		requestBody ? new Uint8Array(requestBody) : null,
 		capturePolicy,

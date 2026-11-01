@@ -11,6 +11,8 @@ import {
 import { ProviderBadge } from "../ProviderBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { BudgetProfileEditor } from "./BudgetProfileEditor";
+import { BudgetSummary } from "./BudgetSummary";
 import { RateLimitProgress } from "./RateLimitProgress";
 
 function getAuthMethodLabel(authMethod: string): string {
@@ -88,8 +90,10 @@ export function AccountListItem({
 							<span className="text-sm text-muted-foreground">Paused</span>
 						)}
 						{!presenter.isPaused && presenter.rateLimitStatus !== "OK" && (
-							<span className="text-sm text-destructive">
-								{presenter.rateLimitStatus}
+							<span
+								className={`text-sm ${presenter.isRateLimited ? "text-destructive" : "text-muted-foreground"}`}
+							>
+								Last provider status: {presenter.rateLimitStatus}
 							</span>
 						)}
 					</div>
@@ -107,9 +111,13 @@ export function AccountListItem({
 						variant="ghost"
 						size="sm"
 						onClick={() => onPauseToggle(account)}
-						title={account.paused ? "Resume account" : "Pause account"}
+						title={
+							(account.manualPaused ?? account.paused)
+								? "Resume account"
+								: "Pause account"
+						}
 					>
-						{account.paused ? (
+						{(account.manualPaused ?? account.paused) ? (
 							<Play className="h-4 w-4" />
 						) : (
 							<Pause className="h-4 w-4" />
@@ -127,6 +135,12 @@ export function AccountListItem({
 			</div>
 			{account.rateLimitReset && (
 				<RateLimitProgress resetIso={account.rateLimitReset} />
+			)}
+			{account.budget && (
+				<>
+					<BudgetSummary budget={account.budget} />
+					<BudgetProfileEditor id={account.id} budget={account.budget} />
+				</>
 			)}
 		</div>
 	);

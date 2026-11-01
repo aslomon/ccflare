@@ -22,6 +22,7 @@ import {
 	type AccountRenameData,
 	type AccountUpdateData,
 	AUTH_METHODS,
+	type BudgetManagement,
 	getProviderAuthMethod,
 	isAccountProvider,
 	isAuthMethod,
@@ -94,13 +95,25 @@ function isDuplicateAccountNameError(error: unknown): boolean {
 /**
  * Create an accounts list handler
  */
-export function createAccountsListHandler(dbOps: DatabaseOperations) {
+export function createAccountsListHandler(
+	dbOps: DatabaseOperations,
+	budgets?: BudgetManagement,
+) {
 	return (): Response => {
 		const now = Date.now();
 		const response: AccountResponse[] = dbOps
 			.getAllAccounts()
 			.sort((left, right) => right.request_count - left.request_count)
-			.map((account) => serializeAccount(account, now));
+			.map((account) => ({
+				...serializeAccount(account, now),
+				...(budgets?.enabled
+					? {
+							budget: budgets.view(account),
+							manualPaused: account.paused,
+							paused: account.paused || budgets.view(account).automaticPaused,
+						}
+					: {}),
+			}));
 
 		return jsonResponse(response);
 	};

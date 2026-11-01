@@ -173,3 +173,24 @@ describe("processStreamChunk", () => {
 		expect(state.lastTokenTimestamp).toBeNumber();
 	});
 });
+
+it("uses the final LM Studio input count instead of its preliminary count", () => {
+	const state = createRequestState({
+		...createStartMessage(),
+		providerName: "lmstudio",
+	});
+	processStreamChunk(
+		new TextEncoder().encode(
+			'event: message_start\ndata: {"type":"message_start","message":{"model":"qwen/test","usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+		),
+		state,
+	);
+	processStreamChunk(
+		new TextEncoder().encode(
+			'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":12,"output_tokens":7}}\n\n',
+		),
+		state,
+	);
+	expect(state.usage.inputTokens).toBe(12);
+	expect(state.usage.outputTokens).toBe(7);
+});

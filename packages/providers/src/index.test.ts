@@ -8,6 +8,8 @@ describe("built-in providers", () => {
 			"openai",
 			"claude-code",
 			"codex",
+			"lmstudio",
+			"grok-build",
 		]);
 	});
 

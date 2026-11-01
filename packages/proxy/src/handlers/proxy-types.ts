@@ -3,12 +3,14 @@ import type { AsyncDbWriter, DatabaseOperations } from "@ccflare/database";
 import type { Provider, ProviderRegistry } from "@ccflare/providers";
 import {
 	type AccountProvider,
+	type BudgetRouting,
 	isAccountProvider,
 	type LoadBalancingStrategy,
 } from "@ccflare/types";
 import type { UsageWorkerTransport } from "../usage-worker";
 
 export interface ProxyContext {
+	budgets?: BudgetRouting;
 	strategy: LoadBalancingStrategy;
 	dbOps: DatabaseOperations;
 	runtime: RuntimeConfig;
@@ -19,6 +21,8 @@ export interface ProxyContext {
 }
 
 export interface ResolvedProxyContext extends ProxyContext {
+	budgetModel?: string | null;
+	budgetWork?: number;
 	provider: Provider;
 	providerName: AccountProvider;
 	upstreamPath: string;

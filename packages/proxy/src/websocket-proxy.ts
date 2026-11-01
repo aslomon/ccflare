@@ -2,6 +2,12 @@ import { requestEvents } from "@ccflare/core";
 import { sanitizeRequestHeaders } from "@ccflare/http";
 import { Logger } from "@ccflare/logger";
 import type { Account, AccountProvider } from "@ccflare/types";
+import { budgetUnavailable } from "./budget/request";
+import {
+	authorizeWebSocketFrame,
+	finishWebSocketBudget,
+	type WebSocketBudgetState,
+} from "./budget/websocket";
 import { selectAccountsForRequest } from "./handlers/account-selector";
 import type {
 	ProxyContext,
@@ -42,7 +48,7 @@ export interface WebSocketProxyPlan {
 	protocols: string[];
 }
 
-export interface WebSocketProxySession {
+export interface WebSocketProxySession extends WebSocketBudgetState {
 	path: string;
 	providerName: AccountProvider;
 	upstreamPath: string;
@@ -269,6 +275,7 @@ function endActiveTurn(
 		endMessage.error = error;
 	}
 	session.requestContext.usageWorker.postMessage(endMessage);
+	finishWebSocketBudget(session, session.requestContext.budgets);
 	session.activeTurn = null;
 }
 
@@ -291,6 +298,11 @@ function startActiveTurn(
 	}
 
 	const requestId = crypto.randomUUID();
+	if (session.budgetReservation)
+		session.requestContext.budgets?.bind?.(
+			session.budgetReservation,
+			requestId,
+		);
 	const timestamp = session.pendingRequestTimestamp ?? Date.now();
 	const capturePolicy = loadRawPayloadCapturePolicy();
 	const startMessage: StartMessage = {
@@ -469,7 +481,35 @@ async function flushPendingMessages(
 		upstream.readyState === WebSocket.OPEN &&
 		ws.readyState === WebSocket.OPEN
 	) {
-		upstream.send(session.pendingMessages.shift() as WebSocketMessageData);
+		const message = session.pendingMessages.shift();
+		if (message === undefined) break;
+		try {
+			session.budgetSending = (session.budgetSending ?? Promise.resolve()).then(
+				async () => {
+					await authorizeWebSocketFrame(
+						session,
+						session.requestContext.budgets,
+						session.connectedAccount,
+						message,
+					);
+					if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+				},
+			);
+			await session.budgetSending;
+		} catch {
+			finishWebSocketBudget(session, session.requestContext.budgets);
+			closeDownstream(
+				ws,
+				CLOSE_CODE_TRY_AGAIN_LATER,
+				"Account budget unavailable",
+			);
+			closeUpstream(
+				session,
+				CLOSE_CODE_TRY_AGAIN_LATER,
+				"Account budget unavailable",
+			);
+			break;
+		}
 	}
 }
 
@@ -691,6 +731,8 @@ export function handleWebSocketUpgradeRequest(
 
 	const requestMeta = createRequestMetadata(req, url);
 	const accounts = selectAccountsForRequest(requestMeta, requestContext);
+	if (requestContext.budgets?.enabled && accounts.length === 0)
+		return budgetUnavailable();
 	const protocols = getProtocols(req.headers);
 	const sessionId = crypto.randomUUID();
 	const session: WebSocketProxySession = {
@@ -751,7 +793,34 @@ export const websocketProxyHandler: Bun.WebSocketHandler<WebSocketProxyData> = {
 		capturePendingRequestBody(session, message);
 
 		if (session.upstream && session.upstream.readyState === WebSocket.OPEN) {
-			session.upstream.send(message);
+			if (!session.requestContext.budgets?.enabled) {
+				session.upstream.send(message);
+				return;
+			}
+			const upstream = session.upstream;
+			session.budgetSending = (session.budgetSending ?? Promise.resolve())
+				.then(async () => {
+					await authorizeWebSocketFrame(
+						session,
+						session.requestContext.budgets,
+						session.connectedAccount,
+						message,
+					);
+					if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+				})
+				.catch(() => {
+					finishWebSocketBudget(session, session.requestContext.budgets);
+					closeDownstream(
+						ws,
+						CLOSE_CODE_TRY_AGAIN_LATER,
+						"Account budget unavailable",
+					);
+					closeUpstream(
+						session,
+						CLOSE_CODE_TRY_AGAIN_LATER,
+						"Account budget unavailable",
+					);
+				});
 			return;
 		}
 
@@ -778,6 +847,7 @@ export const websocketProxyHandler: Bun.WebSocketHandler<WebSocketProxyData> = {
 			return;
 		}
 		session.downstreamClosed = true;
+		finishWebSocketBudget(session, session.requestContext.budgets);
 		session.closed = true;
 		session.pendingMessages.length = 0;
 		clearConnectTimeout(session);

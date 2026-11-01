@@ -10,6 +10,7 @@ import {
 	createAccountUpdateHandler,
 } from "./handlers/accounts";
 import { createAnalyticsHandler } from "./handlers/analytics";
+import { createBudgetHandlers } from "./handlers/budgets";
 import { createConfigHandlers } from "./handlers/config";
 import { createHealthHandler } from "./handlers/health";
 import { createLogsStreamHandler } from "./handlers/logs";
@@ -93,7 +94,10 @@ export class APIRouter {
 		);
 		const statsHandler = createStatsHandler(dbOps);
 		const statsResetHandler = createStatsResetHandler(dbOps);
-		const accountsHandler = createAccountsListHandler(dbOps);
+		const accountsHandler = createAccountsListHandler(
+			dbOps,
+			this.context.budgets,
+		);
 		const accountAddHandler = createAccountAddHandler(dbOps, config);
 		const requestsSummaryHandler = createRequestsSummaryHandler(dbOps);
 		const requestsDetailHandler = createRequestsDetailHandler(dbOps);
@@ -124,6 +128,24 @@ export class APIRouter {
 		this.staticHandlers.set("GET:/api/stats", () => statsHandler());
 		this.staticHandlers.set("POST:/api/stats/reset", () => statsResetHandler());
 		this.staticHandlers.set("GET:/api/accounts", () => accountsHandler());
+		if (this.context.budgets) {
+			const budgets = createBudgetHandlers(dbOps, config, this.context.budgets);
+			this.staticHandlers.set("GET:/api/budgets", () => budgets.get());
+			this.staticHandlers.set("GET:/api/budgets/history", (req) =>
+				budgets.history(req),
+			);
+			this.staticHandlers.set("POST:/api/budgets/policy", (req) =>
+				budgets.policy(req),
+			);
+			this.staticHandlers.set("POST:/api/budgets/refresh", () =>
+				budgets.refresh(),
+			);
+			this.addDynamicRoute(
+				"PATCH",
+				"/api/accounts/:id/budget",
+				(req, _url, params) => budgets.profile(req, params.id),
+			);
+		}
 		this.staticHandlers.set("POST:/api/accounts", (req) =>
 			accountAddHandler(req),
 		);

@@ -15,10 +15,14 @@ import {
 	parseInteger,
 	parseResetTime,
 } from "../openai/provider";
+import { codexAccountId } from "./headers";
 import { CodexOAuthProvider } from "./oauth";
 
-const CODEX_CLIENT_VERSION = "0.118.0";
+const CODEX_CLIENT_VERSION = "0.164.0";
 const CODEX_USER_AGENT = `codex_cli_rs/${CODEX_CLIENT_VERSION} (Mac OS; arm64)`;
+const CODEX_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const CODEX_CLI_UA_PATTERN =
+	/^codex_cli_rs\/((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))(\s|$)/;
 const log = new Logger("CodexProvider");
 const PROVIDER_NAME = "codex" as const;
 const DEFAULT_BASE_URL = getProviderDefaultBaseUrl(PROVIDER_NAME);
@@ -48,12 +52,45 @@ const CODEX_REFRESH_CONFIG: RefreshRequestConfig = {
 	},
 };
 
+function resolveCodexClientIdentity(headers: Headers): {
+	version: string;
+	userAgent: string;
+} {
+	const incomingUserAgent = headers.get("user-agent");
+	const uaVersion = incomingUserAgent?.match(CODEX_CLI_UA_PATTERN)?.[1];
+	if (uaVersion && incomingUserAgent) {
+		const incomingVersion = headers.get("version");
+		if (!headers.has("version")) {
+			return { version: uaVersion, userAgent: incomingUserAgent };
+		}
+		if (
+			incomingVersion !== null &&
+			CODEX_VERSION_PATTERN.test(incomingVersion) &&
+			incomingVersion === uaVersion
+		) {
+			return { version: incomingVersion, userAgent: incomingUserAgent };
+		}
+	}
+
+	return { version: CODEX_CLIENT_VERSION, userAgent: CODEX_USER_AGENT };
+}
+
 export class CodexProvider extends OpenAIProvider {
 	name: string = PROVIDER_NAME;
 	defaultBaseUrl: string = DEFAULT_BASE_URL;
 
 	supportsWebSocket(upstreamPath: string): boolean {
 		return upstreamPath === "/responses";
+	}
+
+	isStreamingResponse(response: Response, upstreamPath = ""): boolean {
+		// Native Codex Responses can omit Content-Type while still returning SSE.
+		return (
+			super.isStreamingResponse(response) ||
+			(upstreamPath === "/responses" &&
+				response.ok &&
+				!response.headers.has("content-type"))
+		);
 	}
 
 	async refreshToken(
@@ -70,10 +107,21 @@ export class CodexProvider extends OpenAIProvider {
 			newHeaders.set("Authorization", `Bearer ${account.access_token}`);
 		}
 
+		newHeaders.delete("ChatGPT-Account-Id");
+		const accountId = account?.access_token
+			? codexAccountId(account.access_token)
+			: null;
+		if (accountId) newHeaders.set("ChatGPT-Account-Id", accountId);
+
+		// Codex CLI identity is a pair. Forward the incoming UA only when its
+		// semver matches a strict version header, or when that header is absent.
+		// Any other combination is replaced by the fallback pair.
+		const clientIdentity = resolveCodexClientIdentity(newHeaders);
+
 		// Codex-specific headers
 		newHeaders.set("originator", "codex_cli_rs");
-		newHeaders.set("User-Agent", CODEX_USER_AGENT);
-		newHeaders.set("Version", CODEX_CLIENT_VERSION);
+		newHeaders.set("User-Agent", clientIdentity.userAgent);
+		newHeaders.set("Version", clientIdentity.version);
 		newHeaders.set("Openai-Beta", "responses=experimental");
 
 		// Remove Anthropic-family headers that don't belong on Codex requests

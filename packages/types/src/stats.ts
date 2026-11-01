@@ -175,6 +175,7 @@ export interface HealthResponse {
 
 // Config types
 export interface ConfigResponse {
+	sessionRotation?: { minMs: number; maxMs: number };
 	lbStrategy: StrategyName;
 	port: number;
 	sessionDurationMs: number;

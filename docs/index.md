@@ -24,8 +24,8 @@ When working with Claude API at scale, rate limits can become a significant bott
 ## Key Features
 
 ### 🎯 Intelligent Load Balancing
-- **Session-based** (only supported strategy): Maintains conversation context with 5-hour sessions to avoid rate limits and account bans
-- **⚠️ WARNING**: Other strategies (round-robin, least-requests, weighted) have been removed as they can trigger Claude's anti-abuse systems
+- **Adaptive account budgets**: Managed releases allocate supported accounts by remaining weekly capacity with 20–90-minute sessions and automatic quota blocking.
+- **Legacy session selection**: Available when adaptive budgets are disabled.
 
 ### 📈 Real-Time Monitoring & Analytics
 - **Web Dashboard**: Interactive UI at the server root (`/`) with live metrics
@@ -52,6 +52,7 @@ When working with Claude API at scale, rate limits can become a significant bott
 - [Data Flow](./data-flow.md) - Request lifecycle through the system
 
 ### Core Features
+- [Adaptive Account Budgets](./account-budgets.md) - Provider limits, dynamic allocation, onboarding, management API, and rollback
 - [Load Balancing Strategy](./load-balancing.md) - Session-based strategy for safe account usage
 - [Provider System](./providers.md) - Provider abstraction and OAuth implementation
 - [Database Schema](./database.md) - SQLite structure, migrations, and maintenance
@@ -262,3 +263,5 @@ ccflare is open source software licensed under the MIT License. See the [LICENSE
     <a href="./contributing.md">Contribute</a>
   </p>
 </div>
+
+- [Local workers and LM Studio](local-workers.md) — provider isolation, reasoning, capacity and worker dispatch.

@@ -1,5 +1,5 @@
 import {
-	createWriteStream,
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	statSync,
@@ -13,7 +13,7 @@ import {
 	LIMITS,
 	registerDisposable,
 } from "@ccflare/core";
-import type { LogEvent } from "@ccflare/types";
+import { isLogEvent, type LogEvent } from "@ccflare/types";
 
 function writeToStderr(message: string, error: unknown): void {
 	if (typeof process === "undefined") {
@@ -26,23 +26,17 @@ function writeToStderr(message: string, error: unknown): void {
 }
 
 export class LogFileWriter implements Disposable {
-	private logDir: string;
-	private logFile: string;
-	private stream: ReturnType<typeof createWriteStream> | null = null;
-	private maxFileSize = BUFFER_SIZES.LOG_FILE_MAX_SIZE;
+	private readonly logFile: string;
+	private readonly maxFileSize = BUFFER_SIZES.LOG_FILE_MAX_SIZE;
 
 	constructor() {
 		// Create log directory in tmp folder
-		this.logDir = join(tmpdir(), "ccflare-logs");
-		if (!existsSync(this.logDir)) {
-			mkdirSync(this.logDir, { recursive: true });
+		const logDir = join(tmpdir(), "ccflare-logs");
+		if (!existsSync(logDir)) {
+			mkdirSync(logDir, { recursive: true });
 		}
 
-		this.logFile = join(this.logDir, "app.log");
-		this.initStream();
-	}
-
-	private initStream(): void {
+		this.logFile = join(logDir, "app.log");
 		// Check if we need to rotate
 		if (existsSync(this.logFile)) {
 			const stats = statSync(this.logFile);
@@ -50,16 +44,9 @@ export class LogFileWriter implements Disposable {
 				this.rotateLog();
 			}
 		}
-
-		// Create write stream with append mode
-		this.stream = createWriteStream(this.logFile, { flags: "a" });
 	}
 
 	private rotateLog(): void {
-		if (this.stream) {
-			this.stream.end();
-		}
-
 		if (existsSync(this.logFile)) {
 			try {
 				unlinkSync(this.logFile);
@@ -70,13 +57,18 @@ export class LogFileWriter implements Disposable {
 	}
 
 	write(event: LogEvent): void {
-		if (!this.stream || this.stream.destroyed) {
-			this.initStream();
-		}
+		try {
+			const line = `${JSON.stringify(event)}\n`;
+			const size = statSync(this.logFile, { throwIfNoEntry: false })?.size ?? 0;
+			if (size + Buffer.byteLength(line) > this.maxFileSize) {
+				this.rotateLog();
+			}
 
-		const line = `${JSON.stringify(event)}\n`;
-		if (this.stream) {
-			this.stream.write(line);
+			// Worker termination cannot clean up a persistent Node write stream.
+			// Append synchronously so no descriptor or queued writes outlive the call.
+			appendFileSync(this.logFile, line, "utf8");
+		} catch (error) {
+			writeToStderr("Failed to write log", error);
 		}
 	}
 
@@ -94,7 +86,8 @@ export class LogFileWriter implements Disposable {
 				.slice(-limit)
 				.map((line) => {
 					try {
-						return JSON.parse(line);
+						const value: unknown = JSON.parse(line);
+						return isLogEvent(value) ? value : null;
 					} catch {
 						return null;
 					}
@@ -107,10 +100,7 @@ export class LogFileWriter implements Disposable {
 	}
 
 	close(): void {
-		if (this.stream) {
-			this.stream.end();
-			this.stream = null;
-		}
+		// Each append is already complete and closed when write() returns.
 	}
 
 	dispose(): void {

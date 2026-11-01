@@ -10,6 +10,9 @@
 		"typecheck": "bunx tsc --noEmit",
 		"test": "bun test ./src"
 	},
+	"devDependencies": {
+		"@ccflare/proxy": "workspace:*"
+	},
 	"dependencies": {
 		"@ccflare/core": "workspace:*",
 		"@ccflare/database": "workspace:*",

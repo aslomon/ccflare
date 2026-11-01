@@ -19,6 +19,7 @@
 		"@ccflare/logger": "workspace:*",
 		"@ccflare/providers": "workspace:*",
 		"@ccflare/proxy": "workspace:*",
+		"@ccflare/types": "workspace:*",
 		"zod": "^3.25.76"
 	}
 }

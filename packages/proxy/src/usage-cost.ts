@@ -19,7 +19,10 @@ export async function resolveUsageCost(
 	modelId: string,
 	tokens: TokenBreakdown,
 	estimate: CostEstimator = estimateCostResult,
+	provider?: string,
 ): Promise<CostEstimateResult> {
+	if (provider === "lmstudio")
+		return { costUsd: 0, status: "estimated", source: "local" };
 	if (modelId === "unknown") return unavailableCost;
 	return estimate(modelId, tokens);
 }

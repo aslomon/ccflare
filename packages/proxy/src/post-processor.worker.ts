@@ -419,6 +419,12 @@ function extractUsageFromData(data: string, state: RequestState): void {
 		if (isRecord(parsed) && parsed.type === "message_delta") {
 			if (
 				isRecord(parsed.usage) &&
+				typeof parsed.usage.input_tokens === "number"
+			) {
+				state.usage.inputTokens = parsed.usage.input_tokens;
+			}
+			if (
+				isRecord(parsed.usage) &&
 				typeof parsed.usage.output_tokens === "number"
 			) {
 				state.providerFinalOutputTokens = parsed.usage.output_tokens;
@@ -704,12 +710,17 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 			(state.usage.cacheReadInputTokens || 0) +
 			(state.usage.cacheCreationInputTokens || 0);
 
-		const costEstimate = await resolveUsageCost(usageModel, {
-			inputTokens: state.usage.inputTokens,
-			outputTokens: finalOutputTokens,
-			cacheReadInputTokens: state.usage.cacheReadInputTokens,
-			cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
-		});
+		const costEstimate = await resolveUsageCost(
+			usageModel,
+			{
+				inputTokens: state.usage.inputTokens,
+				outputTokens: finalOutputTokens,
+				cacheReadInputTokens: state.usage.cacheReadInputTokens,
+				cacheCreationInputTokens: state.usage.cacheCreationInputTokens,
+			},
+			undefined,
+			startMessage.providerName,
+		);
 		state.usage.costUsd = costEstimate.costUsd;
 
 		// Calculate tokens per second using actual streaming duration

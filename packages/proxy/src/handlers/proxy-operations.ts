@@ -1,6 +1,7 @@
 import { logError, ProviderError } from "@ccflare/core";
 import { Logger } from "@ccflare/logger";
 import type { Account, RequestMeta } from "@ccflare/types";
+import { holdBudgetResponse, reserveBudgetRequest } from "../budget/request";
 import { forwardToClient } from "../response-handler";
 import { ERROR_MESSAGES, type ResolvedProxyContext } from "./proxy-types";
 import { makeProxyRequest } from "./request-handler";
@@ -96,6 +97,14 @@ export async function proxyWithAccount(
 	failoverAttempts: number,
 	ctx: ResolvedProxyContext,
 ): Promise<Response | null> {
+	const reservation = await reserveBudgetRequest(
+		ctx.budgets,
+		account,
+		requestBodyBuffer,
+		requestMeta.id,
+	);
+	if (!reservation) return null;
+	let forwarded = false;
 	try {
 		log.info(`Attempting request with account: ${account.name}`);
 
@@ -122,6 +131,9 @@ export async function proxyWithAccount(
 			headers,
 			createBodyStream,
 			!!req.body,
+			ctx.providerName === "lmstudio"
+				? AbortSignal.any([req.signal, AbortSignal.timeout(3_600_000)])
+				: undefined,
 		);
 		const responseHeadersReceivedAt = Date.now();
 
@@ -132,7 +144,7 @@ export async function proxyWithAccount(
 		}
 
 		// Forward response to client
-		return forwardToClient(
+		const forwardedResponse = await forwardToClient(
 			{
 				requestId: requestMeta.id,
 				method: requestMeta.method,
@@ -149,8 +161,13 @@ export async function proxyWithAccount(
 			},
 			ctx,
 		);
+		forwarded = true;
+		return holdBudgetResponse(forwardedResponse, ctx.budgets, reservation);
 	} catch (err) {
 		handleProxyError(err, account, log);
 		return null;
+	} finally {
+		if (!forwarded && reservation !== "unmanaged")
+			ctx.budgets?.finish(reservation);
 	}
 }

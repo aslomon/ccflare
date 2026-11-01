@@ -8,6 +8,7 @@ import type {
 	AuthCompleteData,
 	AuthInitData,
 	AuthSessionStatusResponse,
+	BudgetProfile,
 	CleanupResponse,
 	LogEvent,
 	MutationResult,
@@ -43,11 +44,21 @@ class API extends HttpClient {
 	async getAccounts(): Promise<AccountResponse[]> {
 		return this.getJson<AccountResponse[]>("/api/accounts");
 	}
+	async setBudgetProfile(id: string, profile: BudgetProfile): Promise<void> {
+		await this.patchJson(
+			`/api/accounts/${encodeURIComponent(id)}/budget`,
+			profile,
+		);
+	}
+	async refreshBudgets(): Promise<void> {
+		await this.postJson("/api/budgets/refresh");
+	}
 
 	async createApiKeyAccount(data: {
 		name: string;
 		provider: ApiKeyProvider;
 		apiKey: string;
+		baseUrl?: string;
 	}): Promise<{ message: string; accountId: string }> {
 		try {
 			const result = await this.postJson<MutationResult<AccountCreateData>>(
@@ -57,6 +68,7 @@ class API extends HttpClient {
 					provider: data.provider,
 					auth_method: "api_key",
 					api_key: data.apiKey,
+					...(data.baseUrl ? { base_url: data.baseUrl } : {}),
 				},
 			);
 			return {

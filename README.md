@@ -17,6 +17,11 @@ ccflare routes each provider by URL prefix, load-balances across multiple accoun
 
 ## Quick start
 
+Use **Bun 1.4.4 or later**. Bun 1.3.11 retains native resources after worker
+termination, which can accumulate during usage-worker recovery. Logging uses
+short, completed append operations so terminated workers cannot leave open log
+streams behind. Log rotation also runs during normal operation.
+
 ```bash
 git clone https://github.com/snipeship/ccflare
 cd ccflare
@@ -64,6 +69,28 @@ Examples:
 - `/v1/ccflare/anthropic/messages` with `"model":"openai/gpt-4o-mini"`
 
 ## Account setup
+
+### Account manager
+
+Use the account manager for a compact status overview and safe account changes:
+
+```bash
+ccflare-accounts
+
+# Direct commands
+ccflare-accounts list
+ccflare-accounts add "Claude 3" claude-code
+ccflare-accounts replace "Claude 2"
+ccflare-accounts pause "Claude 1"
+ccflare-accounts resume "Claude 1"
+```
+
+OAuth actions print the provider login URL for SSH/headless use. Outside SSH,
+the account manager also tries to open it in the browser. Enter the complete
+authorization code in the terminal. `replace` validates the new credential
+before changing the existing account. The previous account is retained under a
+timestamped `old` name and paused, so replacement is recoverable. `remove`
+requires typing the exact account name before credentials are deleted.
 
 ### API key accounts
 
@@ -233,3 +260,5 @@ Additional repo docs live in [`docs/`](docs/):
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Grok Build subscription support uses the native CLI OAuth login, `/v1/grok-build/*`, and a validated weekly quota adapter. See [provider setup](docs/providers.md#grok-build-subscription).
