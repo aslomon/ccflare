@@ -4,6 +4,24 @@
 
 ccflare routes each provider by URL prefix, load-balances across multiple accounts, and keeps full request history, rate-limit state, and usage analytics without translating provider payloads.
 
+Token cost comparisons use the [OpenRouter model catalogue](https://openrouter.ai/api/v1/models),
+including cache rates and context-length tiers, with a validated models.dev fallback.
+Native model IDs and Grok Build aliases resolve to the corresponding model rather
+than the first reseller in a catalogue. These are standard API token equivalents,
+not subscription invoices; unrecorded tools, processing tiers, regions, or extended
+cache lifetimes are not reconstructed. Missing model or usage data stays unpriced.
+
+Historical prices can be reviewed and updated using the same estimator:
+
+```bash
+bun scripts/reprice-requests.ts --db ./ccflare.db --plan ./repricing.json
+bun scripts/reprice-requests.ts --db ./ccflare.db --plan ./repricing.json --apply
+```
+
+The first command writes a preview without changing request data. Back up the
+database before applying. The update changes only costs and skips requests whose
+recorded usage changed after the preview.
+
 ![ccflare Dashboard](apps/lander/src/screenshot-dashboard.png)
 
 ## Why ccflare?

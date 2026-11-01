@@ -1,10 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import {
-	captureStreamChunkForPayload,
-	createRequestState,
-	processStreamChunk,
-} from "./post-processor.worker";
 import type { StartMessage } from "./worker-messages";
+
+async function loadWorkerHelpers() {
+	const originalPath = process.env.ccflare_DB_PATH;
+	process.env.ccflare_DB_PATH = ":memory:";
+	try {
+		return await import("./post-processor.worker");
+	} finally {
+		if (originalPath === undefined) delete process.env.ccflare_DB_PATH;
+		else process.env.ccflare_DB_PATH = originalPath;
+	}
+}
+
+const { captureStreamChunkForPayload, createRequestState, processStreamChunk } =
+	await loadWorkerHelpers();
 
 function createStartMessage(): StartMessage {
 	return {

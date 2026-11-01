@@ -1,6 +1,6 @@
 /** Buffer an external payload without first allocating an unbounded body. */
 export async function readBoundedBody(
-	request: Request,
+	request: Pick<Request, "body">,
 	maximum: number,
 ): Promise<ArrayBuffer | null> {
 	if (!request.body) return null;

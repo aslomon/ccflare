@@ -19,6 +19,19 @@ export function installPricingFixture(): () => void {
 			init?: Parameters<typeof fetch>[1],
 		) => {
 			const url = input instanceof Request ? input.url : String(input);
+			if (url === "https://openrouter.ai/api/v1/models")
+				return Response.json({
+					data: [
+						{
+							id: "openai/gpt-4o",
+							pricing: {
+								prompt: "0.0000025",
+								completion: "0.00001",
+								input_cache_read: "0.00000125",
+							},
+						},
+					],
+				});
 			return url === pricingUrl
 				? Response.json(catalogue)
 				: originalFetch(input, init);

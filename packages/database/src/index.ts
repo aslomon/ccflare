@@ -21,4 +21,9 @@ export {
 	parsePayloadStorePolicy,
 } from "./payload-store";
 export { analyzeIndexUsage } from "./performance-indexes";
+export {
+	applyRepricingPlan,
+	prepareRepricingPlan,
+	repricingPlanSchema,
+} from "./pricing-backfill";
 export { BudgetRepository } from "./repositories/budget.repository";

@@ -2,7 +2,16 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { readBoundedBody } from "./bounded-body";
 import { TIME_CONSTANTS } from "./constants";
+import {
+	type PricingCatalogue as ApiResponse,
+	findModelCost,
+	type ModelCost,
+	pricingCatalogueSchema,
+	selectContextCost,
+} from "./pricing-catalogue";
+import { parseOpenRouterCatalogue } from "./pricing-openrouter";
 
 export interface TokenBreakdown {
 	inputTokens?: number;
@@ -14,40 +23,15 @@ export interface TokenBreakdown {
 export interface CostEstimateResult {
 	readonly costUsd: number | null;
 	readonly status: "estimated" | "unavailable";
-	readonly source: "models.dev" | "none" | "local";
+	readonly source: "models.dev" | "openrouter" | "none" | "local";
 }
 
-const PriceSchema = z.number().finite().nonnegative();
 const TokenCountSchema = z
 	.number()
 	.int()
 	.nonnegative()
 	.max(Number.MAX_SAFE_INTEGER);
 
-const ModelCostSchema = z
-	.object({
-		input: PriceSchema.optional(),
-		output: PriceSchema.optional(),
-		cache_read: PriceSchema.optional(),
-		cache_write: PriceSchema.optional(),
-	})
-	.passthrough();
-
-const ModelDefinitionSchema = z
-	.object({
-		id: z.string().min(1),
-		name: z.string().min(1),
-		cost: ModelCostSchema.optional(),
-	})
-	.passthrough();
-
-const ProviderSchema = z
-	.object({
-		models: z.record(ModelDefinitionSchema).optional(),
-	})
-	.passthrough();
-
-const PricingCatalogueSchema = z.record(ProviderSchema);
 const TokenBreakdownSchema = z.object({
 	inputTokens: TokenCountSchema.optional(),
 	outputTokens: TokenCountSchema.optional(),
@@ -55,15 +39,12 @@ const TokenBreakdownSchema = z.object({
 	cacheCreationInputTokens: TokenCountSchema.optional(),
 });
 
-type ApiResponse = z.infer<typeof PricingCatalogueSchema>;
-type ModelCost = z.infer<typeof ModelCostSchema>;
-
 interface Logger {
 	warn(message: string, ...args: unknown[]): void;
 }
 
 function parseCatalogue(data: unknown): ApiResponse | null {
-	const result = PricingCatalogueSchema.safeParse(data);
+	const result = pricingCatalogueSchema.safeParse(data);
 	return result.success ? result.data : null;
 }
 
@@ -74,6 +55,8 @@ function unavailableCost(): CostEstimateResult {
 class PriceCatalogue {
 	private static instance: PriceCatalogue;
 	private priceData: ApiResponse | null = null;
+	private pending: Promise<ApiResponse | null> | null = null;
+	private source: "openrouter" | "models.dev" = "models.dev";
 	private lastFetch = 0;
 	private warnedModels = new Set<string>();
 	private logger: Logger | null = null;
@@ -96,7 +79,7 @@ class PriceCatalogue {
 	}
 
 	private getCachePath(): string {
-		return join(this.getCacheDir(), "models.dev.json");
+		return join(this.getCacheDir(), "api-pricing.json");
 	}
 
 	private getCacheDurationMs(): number {
@@ -122,6 +105,17 @@ class PriceCatalogue {
 			}
 			const content = await fs.readFile(cachePath, "utf-8");
 			const data: unknown = JSON.parse(content);
+			const envelope = z
+				.object({
+					source: z.enum(["openrouter", "models.dev"]),
+					catalogue: pricingCatalogueSchema,
+				})
+				.safeParse(data);
+			if (envelope.success) {
+				this.source = envelope.data.source;
+				return envelope.data.catalogue;
+			}
+			this.source = "models.dev";
 			return parseCatalogue(data);
 		} catch {
 			return null;
@@ -131,29 +125,50 @@ class PriceCatalogue {
 	private async saveToCache(data: ApiResponse): Promise<void> {
 		try {
 			await this.ensureCacheDir();
-			await fs.writeFile(this.getCachePath(), JSON.stringify(data, null, 2));
+			await fs.writeFile(
+				this.getCachePath(),
+				JSON.stringify({ source: this.source, catalogue: data }),
+			);
 		} catch (error) {
 			this.logger?.warn("Failed to save pricing cache: %s", error);
 		}
 	}
 
 	private async fetchRemote(): Promise<ApiResponse | null> {
-		try {
-			const response = await fetch("https://models.dev/api.json");
-			if (!response.ok) {
-				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		for (const source of ["openrouter", "models.dev"]) {
+			try {
+				const url =
+					source === "openrouter"
+						? "https://openrouter.ai/api/v1/models"
+						: "https://models.dev/api.json";
+				const response = await fetch(url, {
+					signal: AbortSignal.timeout(2000),
+				});
+				if (!response.ok) continue;
+				const body = await readBoundedBody(response, 8 * 1024 * 1024);
+				if (!body) continue;
+				const raw: unknown = JSON.parse(new TextDecoder().decode(body));
+				const data =
+					source === "openrouter"
+						? parseOpenRouterCatalogue(raw)
+						: parseCatalogue(raw);
+				if (!data) continue;
+				this.source = source === "openrouter" ? "openrouter" : "models.dev";
+				await this.saveToCache(data);
+				return data;
+			} catch (error) {
+				this.logger?.warn(
+					"Pricing source failed",
+					source,
+					error instanceof Error ? error.message : String(error),
+				);
 			}
-			const rawData: unknown = await response.json();
-			const data = parseCatalogue(rawData);
-			if (!data) {
-				throw new Error("Invalid models.dev pricing catalogue");
-			}
-			await this.saveToCache(data);
-			return data;
-		} catch (error) {
-			this.logger?.warn("Failed to fetch pricing data: %s", error);
-			return null;
 		}
+		return null;
+	}
+
+	getSource(): "openrouter" | "models.dev" {
+		return this.source;
 	}
 
 	async getPricing(): Promise<ApiResponse | null> {
@@ -164,7 +179,17 @@ class PriceCatalogue {
 			return this.priceData;
 		}
 
-		const data = (await this.fetchRemote()) ?? (await this.loadFromCache());
+		const pending = this.pending ?? this.refreshPricing();
+		this.pending = pending;
+		try {
+			return await pending;
+		} finally {
+			if (this.pending === pending) this.pending = null;
+		}
+	}
+
+	private async refreshPricing(): Promise<ApiResponse | null> {
+		const data = (await this.loadFromCache()) ?? (await this.fetchRemote());
 		if (data) {
 			this.priceData = data;
 			this.lastFetch = Date.now();
@@ -186,19 +211,6 @@ export function setPricingLogger(logger: Logger): void {
 	PriceCatalogue.get().setLogger(logger);
 }
 
-function findModelCost(
-	pricing: ApiResponse,
-	modelId: string,
-): ModelCost | null {
-	for (const provider of Object.values(pricing)) {
-		const cost = provider.models?.[modelId]?.cost;
-		if (cost) {
-			return cost;
-		}
-	}
-	return null;
-}
-
 function categoryCostUnits(
 	tokenCount: number | undefined,
 	pricePerMillion: number | undefined,
@@ -213,11 +225,16 @@ function categoryCostUnits(
 }
 
 function calculateCost(cost: ModelCost, tokens: TokenBreakdown): number | null {
+	const prompt =
+		(tokens.inputTokens ?? 0) +
+		(tokens.cacheReadInputTokens ?? 0) +
+		(tokens.cacheCreationInputTokens ?? 0);
+	const rates = selectContextCost(cost, prompt);
 	const categoryCosts = [
-		categoryCostUnits(tokens.inputTokens, cost.input),
-		categoryCostUnits(tokens.outputTokens, cost.output),
-		categoryCostUnits(tokens.cacheReadInputTokens, cost.cache_read),
-		categoryCostUnits(tokens.cacheCreationInputTokens, cost.cache_write),
+		categoryCostUnits(tokens.inputTokens, rates.input),
+		categoryCostUnits(tokens.outputTokens, rates.output),
+		categoryCostUnits(tokens.cacheReadInputTokens, rates.cache_read),
+		categoryCostUnits(tokens.cacheCreationInputTokens, rates.cache_write),
 	];
 	let totalCostUnits = 0;
 	for (const amount of categoryCosts) {
@@ -251,7 +268,7 @@ export async function estimateCostResult(
 		return unavailableCost();
 	}
 
-	return { costUsd, status: "estimated", source: "models.dev" };
+	return { costUsd, status: "estimated", source: catalogue.getSource() };
 }
 
 /**
