@@ -26,6 +26,9 @@ Use semantic tokens rather than literal colors in components.
 - Page heading: `text-2xl font-semibold`.
 - Card title: semibold with tight leading and tracking.
 - Primary metric: `text-2xl font-bold`.
+- Overview metrics use at most three columns so full token and USD values stay
+  readable within the sidebar layout; token-category details collapse to one
+  column on narrow screens.
 - Supporting label: `text-sm text-muted-foreground`.
 - Fine print and annotations: `text-xs`, with adequate contrast.
 - Monetary values retain full precision in data and round only when formatted

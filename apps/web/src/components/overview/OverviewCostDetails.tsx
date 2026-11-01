@@ -17,7 +17,7 @@ function TokenCategories({ tokens }: { tokens: TokenBreakdown }) {
 		{ name: "Output", tokens: tokens.outputTokens },
 	];
 	return (
-		<dl className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+		<dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
 			{categories.map((category) => (
 				<div key={category.name}>
 					<dt className="text-xs text-muted-foreground">{category.name}</dt>
