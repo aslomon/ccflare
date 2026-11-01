@@ -23,7 +23,7 @@ import {
 } from "./openai-usage";
 import { boundRequestPayloadForStorage } from "./payload-bounds";
 import { combineChunks } from "./stream-tee";
-import { calculateStreamSpeed } from "./stream-timing";
+import { calculateRequestTimings } from "./stream-timing";
 import { resolveUsageCost } from "./usage-cost";
 import { processWorkerMessageWithAck } from "./worker-message-processor";
 import type {
@@ -277,17 +277,6 @@ function recordTokenEvent(
 			timestamp,
 		});
 	}
-}
-
-function durationBetween(
-	start: number | undefined,
-	end: number | undefined,
-): number | null {
-	if (start === undefined || end === undefined) {
-		return null;
-	}
-
-	return Math.max(0, end - start);
 }
 
 // Cheap substring guard: only parse SSE lines that could influence
@@ -736,14 +725,6 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 			startMessage.providerName,
 		);
 		state.usage.costUsd = costEstimate.costUsd;
-
-		// Calculate tokens per second using actual streaming duration
-		state.usage.tokensPerSecond =
-			calculateStreamSpeed(
-				finalOutputTokens,
-				state.firstTokenTimestamp,
-				state.lastTokenTimestamp,
-			) ?? undefined;
 	}
 
 	let responseBody: string | null = null;
@@ -759,21 +740,14 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		}
 	}
 
-	const timings = {
-		ttftMs: durationBetween(startMessage.timestamp, state.firstTokenTimestamp),
-		proxyOverheadMs: durationBetween(
-			startMessage.timestamp,
-			startMessage.upstreamRequestStartedAt,
-		),
-		upstreamTtfbMs: durationBetween(
-			startMessage.upstreamRequestStartedAt,
-			startMessage.responseHeadersReceivedAt,
-		),
-		streamingDurationMs: durationBetween(
-			state.firstTokenTimestamp,
-			state.lastTokenTimestamp,
-		),
-	};
+	const timings = calculateRequestTimings(
+		startMessage,
+		msg.completedAt,
+		state.usage.outputTokens ?? 0,
+		state.firstTokenTimestamp,
+		state.lastTokenTimestamp,
+	);
+	state.usage.tokensPerSecond = timings.outputTokensPerSecond ?? undefined;
 
 	const payload: RequestPayload = {
 		id: startMessage.requestId,

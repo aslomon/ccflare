@@ -132,14 +132,14 @@ export function OverviewTab() {
 					warning={(analytics?.totals.unpricedRequests ?? 0) > 0}
 				/>
 				<MetricCard
-					title="Output Speed"
+					title="Effective Output Rate"
 					value={formatTokensPerSecond(analytics?.totals.avgTokensPerSecond)}
 					change={trends.outputSpeed?.change}
 					trend={trends.outputSpeed?.direction ?? "flat"}
 					favorable={trends.outputSpeed?.favorable}
 					trendPeriod={trends.period}
 					icon={Zap}
-					note="Measured streams; historical timing unavailable"
+					note="Output tokens ÷ upstream time; earlier timing unavailable"
 				/>
 			</div>
 

@@ -114,6 +114,9 @@ Use Tailwind's four-pixel scale. The established dashboard rhythm is:
   beside the existing per-model API cost totals so cache-heavy usage is auditable.
 - Success percentages retain two decimal places in Overview. Unreliable historic
   stream timing remains unknown rather than inflating output-speed averages.
+- Effective output rate divides all provider-reported output tokens, including
+  reasoning, by observed upstream elapsed time. The visible text-stream span is
+  a separate timing and must not be the denominator for hidden reasoning tokens.
 - Empty, partial, unknown-price, and degraded-accounting states are visible and
   must never be represented as confirmed zero usage or zero cost.
 - Chart colors follow the shared theme variables and retain equivalent meaning
