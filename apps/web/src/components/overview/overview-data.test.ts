@@ -3,6 +3,7 @@ import type { TimePoint } from "@ccflare/types";
 import {
 	buildOverviewTimeSeries,
 	getEstimatedCostNote,
+	getOverviewTrends,
 	OVERVIEW_DEFAULT_RANGE,
 } from "./overview-data";
 
@@ -46,8 +47,43 @@ describe("buildOverviewTimeSeries", () => {
 
 describe("getEstimatedCostNote", () => {
 	it("makes partial pricing coverage explicit", () => {
-		expect(getEstimatedCostNote(2)).toBe("2 requests not priced");
-		expect(getEstimatedCostNote(1)).toBe("1 request not priced");
-		expect(getEstimatedCostNote(0)).toBeUndefined();
+		expect(getEstimatedCostNote(2)).toContain("2 requests not priced");
+		expect(getEstimatedCostNote(1)).toContain("1 request not priced");
+		expect(getEstimatedCostNote(0)).toContain("not an invoice");
+	});
+});
+
+describe("getOverviewTrends", () => {
+	it("compares complete adjacent hours instead of the partial current hour", () => {
+		const hour = 3_600_000;
+		const points = [
+			createPoint(hour),
+			createPoint(2 * hour),
+			createPoint(3 * hour),
+		];
+		points[0].costUsd = 10;
+		points[1].costUsd = 15;
+		points[2].costUsd = 1;
+		const trends = getOverviewTrends(points, "7d", 3.5 * hour);
+		expect(trends.cost).toEqual({
+			change: 50,
+			direction: "up",
+			favorable: false,
+		});
+		expect(trends.period).toBe("last complete hour vs previous hour");
+	});
+
+	it("does not bridge missing buckets or fabricate a change from zero", () => {
+		const hour = 3_600_000;
+		expect(
+			getOverviewTrends(
+				[createPoint(hour), createPoint(3 * hour)],
+				"7d",
+				4 * hour,
+			).cost,
+		).toBeNull();
+		const points = [createPoint(hour), createPoint(2 * hour)];
+		points[0].costUsd = 0;
+		expect(getOverviewTrends(points, "7d", 3 * hour).cost).toBeNull();
 	});
 });

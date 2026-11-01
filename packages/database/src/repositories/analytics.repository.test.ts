@@ -163,6 +163,7 @@ describe("AnalyticsRepository", () => {
 
 			expect(analytics.totals.totalCostUsd).toBe(0.25);
 			expect(analytics.totals.unpricedRequests).toBe(1);
+			expect(analytics.totals.requestsWithoutUsage).toBe(2);
 		} finally {
 			db.close();
 		}

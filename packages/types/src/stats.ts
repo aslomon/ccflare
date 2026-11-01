@@ -137,6 +137,7 @@ export interface AnalyticsResponse {
 		totalTokens: number;
 		totalCostUsd: number;
 		unpricedRequests: number;
+		requestsWithoutUsage?: number;
 		avgTokensPerSecond: number | null;
 	};
 	timeSeries: TimePoint[];

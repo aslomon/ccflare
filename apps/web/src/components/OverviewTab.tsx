@@ -21,9 +21,11 @@ import { ChartsSection } from "./overview/ChartsSection";
 import { DataRetentionCard } from "./overview/DataRetentionCard";
 import { LoadingSkeleton } from "./overview/LoadingSkeleton";
 import { MetricCard } from "./overview/MetricCard";
+import { OverviewCostDetails } from "./overview/OverviewCostDetails";
 import {
 	buildOverviewTimeSeries,
 	getEstimatedCostNote,
+	getOverviewTrends,
 	OVERVIEW_DEFAULT_RANGE,
 } from "./overview/overview-data";
 import { RateLimitInfo } from "./overview/RateLimitInfo";
@@ -58,94 +60,7 @@ export function OverviewTab() {
 		return <LoadingSkeleton />;
 	}
 
-	// Helper function to calculate percentage change
-	function pctChange(current: number, previous: number): number | null {
-		if (previous === 0) return null; // avoid division by zero
-		return ((current - previous) / previous) * 100;
-	}
-
-	// Get trend period description based on time range
-	function getTrendPeriod(range: TimeRange): string {
-		switch (range) {
-			case "1h":
-				return "previous minute";
-			case "6h":
-				return "previous 5 minutes";
-			case "24h":
-				return "previous hour";
-			case "7d":
-				return "previous hour";
-			case "30d":
-				return "previous day";
-			default:
-				return "previous period";
-		}
-	}
-
-	const trendPeriod = getTrendPeriod(timeRange);
-
-	// Calculate percentage changes from time series data
-	let deltaRequests: number | null = null;
-	let deltaSuccessRate: number | null = null;
-	let deltaResponseTime: number | null = null;
-	let deltaCost: number | null = null;
-	let deltaOutputSpeed: number | null = null;
-	let trendRequests: "up" | "down" | "flat" = "flat";
-	let trendSuccessRate: "up" | "down" | "flat" = "flat";
-	let trendResponseTime: "up" | "down" | "flat" = "flat";
-	let trendCost: "up" | "down" | "flat" = "flat";
-	let trendOutputSpeed: "up" | "down" | "flat" = "flat";
-
-	const observedTimeSeries = timeSeriesData.filter(
-		(point) => point.observed === 1,
-	);
-	if (observedTimeSeries.length >= 2) {
-		const lastBucket = observedTimeSeries[observedTimeSeries.length - 1];
-		const prevBucket = observedTimeSeries[observedTimeSeries.length - 2];
-
-		// Calculate deltas
-		deltaRequests = pctChange(lastBucket.requests, prevBucket.requests);
-		deltaSuccessRate = pctChange(
-			lastBucket.successRate,
-			prevBucket.successRate,
-		);
-		// For response time, calculate normal percentage change
-		deltaResponseTime = pctChange(
-			lastBucket.responseTime,
-			prevBucket.responseTime,
-		);
-		deltaCost = pctChange(lastBucket.cost, prevBucket.cost);
-		deltaOutputSpeed = pctChange(
-			lastBucket.tokensPerSecond,
-			prevBucket.tokensPerSecond,
-		);
-
-		// Determine trends
-		trendRequests =
-			deltaRequests !== null ? (deltaRequests >= 0 ? "up" : "down") : "flat";
-		trendSuccessRate =
-			deltaSuccessRate !== null
-				? deltaSuccessRate >= 0
-					? "up"
-					: "down"
-				: "flat";
-		// For response time, higher is worse (positive change is bad)
-		trendResponseTime =
-			deltaResponseTime !== null
-				? deltaResponseTime >= 0
-					? "down"
-					: "up"
-				: "flat";
-		// For cost, higher is bad (positive change is bad)
-		trendCost = deltaCost !== null ? (deltaCost >= 0 ? "down" : "up") : "flat";
-		// For output speed, higher is better
-		trendOutputSpeed =
-			deltaOutputSpeed !== null
-				? deltaOutputSpeed >= 0
-					? "up"
-					: "down"
-				: "flat";
-	}
+	const trends = getOverviewTrends(analytics?.timeSeries ?? [], timeRange);
 
 	// Use analytics data for model distribution
 	const modelData =
@@ -165,55 +80,70 @@ export function OverviewTab() {
 				<TimeRangeSelector value={timeRange} onChange={setTimeRange} />
 			</div>
 
+			<p className="text-xs text-muted-foreground">
+				Totals cover the selected range. Trend arrows compare the last two
+				complete time buckets.
+			</p>
+
 			{/* Metrics Grid */}
 			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
 				<MetricCard
 					title="Total Requests"
 					value={formatNumber(analytics?.totals.requests || 0)}
-					change={deltaRequests !== null ? deltaRequests : undefined}
-					trend={trendRequests}
-					trendPeriod={trendPeriod}
+					change={trends.requests?.change}
+					trend={trends.requests?.direction ?? "flat"}
+					favorable={trends.requests?.favorable}
+					trendPeriod={trends.period}
 					icon={Activity}
 				/>
 				<MetricCard
 					title="Success Rate"
-					value={formatPercentage(analytics?.totals.successRate || 0, 0)}
-					change={deltaSuccessRate !== null ? deltaSuccessRate : undefined}
-					trend={trendSuccessRate}
-					trendPeriod={trendPeriod}
+					value={formatPercentage(analytics?.totals.successRate || 0, 2)}
+					change={trends.successRate?.change}
+					trend={trends.successRate?.direction ?? "flat"}
+					favorable={trends.successRate?.favorable}
+					trendPeriod={trends.period}
 					icon={CheckCircle}
 				/>
 				<MetricCard
 					title="Avg Response Time"
 					value={`${Math.round(analytics?.totals.avgResponseTime || 0)}ms`}
-					change={deltaResponseTime !== null ? deltaResponseTime : undefined}
-					trend={trendResponseTime}
-					trendPeriod={trendPeriod}
+					change={trends.responseTime?.change}
+					trend={trends.responseTime?.direction ?? "flat"}
+					favorable={trends.responseTime?.favorable}
+					trendPeriod={trends.period}
 					icon={Clock}
 				/>
 				<MetricCard
 					title="Total Tokens"
 					value={formatTokens(analytics?.totals.totalTokens)}
 					icon={Hash}
+					note="Includes input, output and cache reuse"
 				/>
 				<MetricCard
-					title="Estimated Cost"
+					title="API Equivalent (USD)"
 					value={formatCost(analytics?.totals.totalCostUsd)}
-					change={deltaCost !== null ? deltaCost : undefined}
-					trend={trendCost}
-					trendPeriod={trendPeriod}
+					change={trends.cost?.change}
+					trend={trends.cost?.direction ?? "flat"}
+					favorable={trends.cost?.favorable}
+					trendPeriod={trends.period}
 					icon={DollarSign}
 					note={getEstimatedCostNote(analytics?.totals.unpricedRequests ?? 0)}
+					warning={(analytics?.totals.unpricedRequests ?? 0) > 0}
 				/>
 				<MetricCard
 					title="Output Speed"
 					value={formatTokensPerSecond(analytics?.totals.avgTokensPerSecond)}
-					change={deltaOutputSpeed !== null ? deltaOutputSpeed : undefined}
-					trend={trendOutputSpeed}
-					trendPeriod={trendPeriod}
+					change={trends.outputSpeed?.change}
+					trend={trends.outputSpeed?.direction ?? "flat"}
+					favorable={trends.outputSpeed?.favorable}
+					trendPeriod={trends.period}
 					icon={Zap}
+					note="Measured streams; historical timing unavailable"
 				/>
 			</div>
+
+			{analytics && <OverviewCostDetails analytics={analytics} />}
 
 			<ChartsSection
 				timeSeriesData={timeSeriesData}

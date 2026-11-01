@@ -10,6 +10,8 @@ export interface MetricCardProps {
 	icon: React.ComponentType<{ className?: string }>;
 	trend?: "up" | "down" | "flat";
 	trendPeriod?: string;
+	favorable?: boolean;
+	warning?: boolean;
 	note?: string;
 }
 
@@ -20,12 +22,14 @@ export function MetricCard({
 	icon: Icon,
 	trend,
 	trendPeriod,
+	favorable,
+	warning = false,
 	note,
 }: MetricCardProps) {
 	const trendElement = trend !== "flat" && change !== undefined && (
 		<div
 			className={`flex items-center gap-1 text-sm font-medium ${
-				trend === "up" ? "text-success" : "text-destructive"
+				(favorable ?? trend === "up") ? "text-success" : "text-destructive"
 			}`}
 		>
 			{trend === "up" ? (
@@ -45,13 +49,17 @@ export function MetricCard({
 					{trendPeriod && trendElement ? (
 						<Popover>
 							<PopoverTrigger asChild>
-								<div className="flex items-center gap-1 cursor-help">
+								<button
+									type="button"
+									aria-label={trendPeriod}
+									className="flex items-center gap-1 cursor-help"
+								>
 									{trendElement}
 									<Info className="h-3 w-3 text-muted-foreground" />
-								</div>
+								</button>
 							</PopoverTrigger>
 							<PopoverContent className="w-auto p-2 text-xs">
-								<p>Compared to {trendPeriod}</p>
+								<p>{trendPeriod}</p>
 							</PopoverContent>
 						</Popover>
 					) : (
@@ -61,7 +69,13 @@ export function MetricCard({
 				<div className="space-y-1">
 					<p className="text-sm text-muted-foreground">{title}</p>
 					<p className="text-2xl font-bold">{value}</p>
-					{note && <p className="text-xs text-warning">{note}</p>}
+					{note && (
+						<p
+							className={`text-xs ${warning ? "text-warning" : "text-muted-foreground"}`}
+						>
+							{note}
+						</p>
+					)}
 				</div>
 			</CardContent>
 		</Card>

@@ -41,6 +41,28 @@ function createStartMessage(): StartMessage {
 }
 
 describe("processStreamChunk", () => {
+	it("uses upstream arrival times even when the worker processes chunks together", () => {
+		const state = createRequestState(createStartMessage());
+		const chunk = new TextEncoder().encode(
+			'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+		);
+		processStreamChunk(chunk, state, 1_000);
+		processStreamChunk(chunk, state, 3_000);
+		expect(state.firstTokenTimestamp).toBe(1_000);
+		expect(state.lastTokenTimestamp).toBe(3_000);
+	});
+
+	it("includes streamed tool arguments in the observed output interval", () => {
+		const state = createRequestState(createStartMessage());
+		const chunk = new TextEncoder().encode(
+			'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+		);
+		processStreamChunk(chunk, state, 1_000);
+		processStreamChunk(chunk, state, 3_000);
+		expect(state.firstTokenTimestamp).toBe(1_000);
+		expect(state.lastTokenTimestamp).toBe(3_000);
+	});
+
 	it("does not retain stream chunks when raw capture is disabled", () => {
 		const state = createRequestState({
 			...createStartMessage(),

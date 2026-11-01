@@ -46,6 +46,7 @@ export interface ChunkMessage {
 	messageId?: string;
 	requestId: string;
 	data: Uint8Array;
+	receivedAt?: number;
 	dataTruncated?: boolean;
 }
 
@@ -64,6 +65,7 @@ export interface EndMessage {
 	type: "end";
 	messageId?: string;
 	requestId: string;
+	completedAt?: number;
 	responseBody?: string | null; // base64 encoded, for non-streaming
 	responseBodyTruncated?: boolean;
 	preExtractedUsage?: PreExtractedUsage;

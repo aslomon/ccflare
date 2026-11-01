@@ -23,6 +23,7 @@ import {
 } from "./openai-usage";
 import { boundRequestPayloadForStorage } from "./payload-bounds";
 import { combineChunks } from "./stream-tee";
+import { calculateStreamSpeed } from "./stream-timing";
 import { resolveUsageCost } from "./usage-cost";
 import { processWorkerMessageWithAck } from "./worker-message-processor";
 import type {
@@ -305,7 +306,11 @@ function isRelevantSseData(data: string): boolean {
 	);
 }
 
-function extractUsageFromData(data: string, state: RequestState): void {
+function extractUsageFromData(
+	data: string,
+	state: RequestState,
+	receivedAt: number,
+): void {
 	if (!isRelevantSseData(data)) return;
 
 	try {
@@ -372,7 +377,7 @@ function extractUsageFromData(data: string, state: RequestState): void {
 			parsed.type === "response.output_text.delta" &&
 			typeof parsed.delta === "string"
 		) {
-			recordTokenEvent(state, parsed.delta);
+			recordTokenEvent(state, parsed.delta, receivedAt);
 		}
 
 		if (
@@ -391,16 +396,16 @@ function extractUsageFromData(data: string, state: RequestState): void {
 				firstChoice && isRecord(firstChoice.delta) ? firstChoice.delta : null;
 			if (delta) {
 				if (typeof delta.content === "string") {
-					recordTokenEvent(state, delta.content);
+					recordTokenEvent(state, delta.content, receivedAt);
 				}
 				if (typeof delta.reasoning_content === "string") {
-					recordTokenEvent(state, delta.reasoning_content);
+					recordTokenEvent(state, delta.reasoning_content, receivedAt);
 				}
 				if (Array.isArray(delta.tool_calls)) {
 					for (const toolCall of delta.tool_calls) {
 						if (!isRecord(toolCall) || !isRecord(toolCall.function)) continue;
 						if (typeof toolCall.function.arguments === "string") {
-							recordTokenEvent(state, toolCall.function.arguments);
+							recordTokenEvent(state, toolCall.function.arguments, receivedAt);
 						}
 					}
 				}
@@ -433,7 +438,7 @@ function extractUsageFromData(data: string, state: RequestState): void {
 					parsed.usage.output_tokens > 0 &&
 					state.lastTokenTimestamp === undefined
 				) {
-					state.lastTokenTimestamp = Date.now();
+					state.lastTokenTimestamp = receivedAt;
 				}
 				return; // No further processing needed
 			}
@@ -457,10 +462,15 @@ function extractUsageFromData(data: string, state: RequestState): void {
 				typeof parsed.delta.thinking === "string"
 			) {
 				textToCount = parsed.delta.thinking;
+			} else if (
+				parsed.delta.type === "input_json_delta" &&
+				typeof parsed.delta.partial_json === "string"
+			) {
+				textToCount = parsed.delta.partial_json;
 			}
 
 			if (textToCount) {
-				recordTokenEvent(state, textToCount);
+				recordTokenEvent(state, textToCount, receivedAt);
 			}
 		}
 
@@ -480,6 +490,7 @@ function extractUsageFromData(data: string, state: RequestState): void {
 export function processStreamChunk(
 	chunk: Uint8Array,
 	state: RequestState,
+	receivedAt: number = Date.now(),
 ): void {
 	// Use module-level decoder in streaming mode (avoids per-chunk allocation)
 	const text = streamDecoder.decode(chunk, { stream: true });
@@ -507,7 +518,7 @@ export function processStreamChunk(
 			if (parsed.event) {
 				currentEvent = parsed.event;
 			} else if (parsed.data) {
-				extractUsageFromData(parsed.data, state);
+				extractUsageFromData(parsed.data, state, receivedAt);
 			}
 		}
 
@@ -634,7 +645,7 @@ function handleChunk(msg: ChunkMessage): void {
 	if (msg.dataTruncated) state.payloadCapped = true;
 
 	// Process for usage extraction (always, regardless of payload cap)
-	processStreamChunk(msg.data, state);
+	processStreamChunk(msg.data, state, msg.receivedAt);
 }
 
 async function handleEnd(msg: EndMessage): Promise<void> {
@@ -645,7 +656,10 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 	}
 
 	const { startMessage } = state;
-	const responseTime = Date.now() - startMessage.timestamp;
+	const responseTime = Math.max(
+		0,
+		(msg.completedAt ?? Date.now()) - startMessage.timestamp,
+	);
 
 	// Skip all database operations for ignored requests
 	if (state.shouldSkipLogging) {
@@ -724,17 +738,12 @@ async function handleEnd(msg: EndMessage): Promise<void> {
 		state.usage.costUsd = costEstimate.costUsd;
 
 		// Calculate tokens per second using actual streaming duration
-		if (finalOutputTokens > 0) {
-			const durationMs = durationBetween(
+		state.usage.tokensPerSecond =
+			calculateStreamSpeed(
+				finalOutputTokens,
 				state.firstTokenTimestamp,
 				state.lastTokenTimestamp,
-			);
-			if (durationMs !== null && durationMs > 0) {
-				state.usage.tokensPerSecond = finalOutputTokens / (durationMs / 1000);
-			} else if (durationMs !== null) {
-				state.usage.tokensPerSecond = finalOutputTokens / 0.001;
-			}
-		}
+			) ?? undefined;
 	}
 
 	let responseBody: string | null = null;

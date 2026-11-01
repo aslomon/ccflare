@@ -106,6 +106,14 @@ Use Tailwind's four-pixel scale. The established dashboard rhythm is:
 - Missing time buckets are represented explicitly rather than silently joined.
 - Tokens and estimated cost must remain distinguishable by label, unit, color,
   and tooltip.
+- Overview totals cover the selected range; trend badges compare only the last
+  two complete, adjacent buckets. Direction and favorable/unfavorable color are
+  separate. Missing buckets and unknown timing never become a fabricated trend.
+- API equivalents explicitly state USD and distinguish catalogue estimates from
+  subscription invoices. Show input, cache-read, cache-write, and output counts
+  beside the existing per-model API cost totals so cache-heavy usage is auditable.
+- Success percentages retain two decimal places in Overview. Unreliable historic
+  stream timing remains unknown rather than inflating output-speed averages.
 - Empty, partial, unknown-price, and degraded-accounting states are visible and
   must never be represented as confirmed zero usage or zero cost.
 - Chart colors follow the shared theme variables and retain equivalent meaning

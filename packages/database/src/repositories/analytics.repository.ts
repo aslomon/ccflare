@@ -26,6 +26,7 @@ interface CombinedTotalsResult {
 	total_tokens: number | null;
 	total_cost_usd: number | null;
 	unpriced_requests: number;
+	requests_without_usage: number;
 	avg_tokens_per_second: number | null;
 	active_accounts: number;
 	input_tokens: number | null;
@@ -55,6 +56,7 @@ export class AnalyticsRepository extends BaseRepository<never> {
 					SUM(COALESCE(total_tokens, 0)) as total_tokens,
 					SUM(COALESCE(cost_usd, 0)) as total_cost_usd,
 					SUM(CASE WHEN total_tokens > 0 AND cost_usd IS NULL THEN 1 ELSE 0 END) as unpriced_requests,
+					SUM(CASE WHEN model IS NULL OR model = 'unknown' OR total_tokens IS NULL THEN 1 ELSE 0 END) as requests_without_usage,
 					AVG(output_tokens_per_second) as avg_tokens_per_second,
 					COUNT(DISTINCT COALESCE(account_used, ?)) as active_accounts,
 					SUM(COALESCE(input_tokens, 0)) as input_tokens,
@@ -259,6 +261,7 @@ export class AnalyticsRepository extends BaseRepository<never> {
 				totalTokens: combined?.total_tokens ?? 0,
 				totalCostUsd: combined?.total_cost_usd ?? 0,
 				unpricedRequests: combined?.unpriced_requests ?? 0,
+				requestsWithoutUsage: combined?.requests_without_usage ?? 0,
 				avgTokensPerSecond: combined?.avg_tokens_per_second ?? null,
 			},
 			timeSeries: timeSeries.map<TimePoint>((point) => ({

@@ -97,6 +97,12 @@ describe("forwardToClient", () => {
 		expect(messages.find((message) => message.type === "chunk")?.data).toEqual(
 			new TextEncoder().encode(stream),
 		);
+		expect(messages.find((message) => message.type === "chunk")).toMatchObject({
+			receivedAt: expect.any(Number),
+		});
+		expect(messages.find((message) => message.type === "end")).toMatchObject({
+			completedAt: expect.any(Number),
+		});
 	});
 	it("caps request and non-streaming response bodies before base64 encoding", async () => {
 		const messages: Array<Record<string, unknown>> = [];

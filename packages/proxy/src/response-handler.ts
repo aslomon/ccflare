@@ -157,6 +157,7 @@ export async function forwardToClient(
 						const chunkMsg: ChunkMessage = {
 							type: "chunk",
 							requestId,
+							receivedAt: Date.now(),
 							data: limitedChunk.bytes ?? new Uint8Array(),
 							dataTruncated: limitedChunk.truncated,
 						};
@@ -167,6 +168,7 @@ export async function forwardToClient(
 				const endMsg: EndMessage = {
 					type: "end",
 					requestId,
+					completedAt: Date.now(),
 					preExtractedModel,
 					success: isExpectedResponse(path, analyticsClone),
 				};
@@ -175,6 +177,7 @@ export async function forwardToClient(
 				const endMsg: EndMessage = {
 					type: "end",
 					requestId,
+					completedAt: Date.now(),
 					preExtractedModel,
 					success: false,
 					error: err instanceof Error ? err.message : String(err),
@@ -208,6 +211,7 @@ export async function forwardToClient(
 			const endMsg: EndMessage = {
 				type: "end",
 				requestId,
+				completedAt: Date.now(),
 				responseBody: body.bytes
 					? Buffer.from(body.bytes).toString("base64")
 					: null,
@@ -220,6 +224,7 @@ export async function forwardToClient(
 			const endMsg: EndMessage = {
 				type: "end",
 				requestId,
+				completedAt: Date.now(),
 				preExtractedModel,
 				success: false,
 				error: err instanceof Error ? err.message : String(err),
